@@ -1,0 +1,303 @@
+use crate::data::api::client::AHUClient;
+use crate::utils::des::DES;
+use crate::utils::parser::Parser;
+use crate::data::model::{User, Course, Exam};
+use anyhow::{Context, Result, anyhow};
+use serde_json::Value;
+use log::{info, debug, warn, error};
+
+const JWXT_HOME: &str = "https://jw.ahu.edu.cn/student/home";
+
+pub struct Crawler {
+    pub client: AHUClient,
+}
+
+impl Crawler {
+    pub fn new(client: AHUClient) -> Self {
+        Self { client }
+    }
+
+    pub async fn login(&self, username: &str, password: &str) -> Result<User> {
+        info!("Starting login flow for user: {}", username);
+        let mut login_success_info: Option<Value> = None;
+        for i in 0..5 {
+            info!("ADWMH login attempt {}/5", i + 1);
+            let auth_code_bytes = self.client.get_auth_code().await.context("Failed to get auth code")?;
+            if auth_code_bytes.is_empty() {
+                warn!("Auth code bytes are empty!");
+                continue;
+            }
+            debug!("Auth code bytes length: {}", auth_code_bytes.len());
+
+            let captcha_res = self.client.get_captcha_result("http://47.236.115.210:8000/captcha", auth_code_bytes.to_vec()).await;
+            
+            let captcha_code = match captcha_res {
+                Ok(res) => {
+                    debug!("OCR Service Response: {:?}", res);
+                    res["result"].as_str().unwrap_or("").to_string()
+                },
+                Err(e) => {
+                    warn!("OCR Service Request Failed: {:?}", e);
+                    String::new()
+                }
+            };
+            
+            if captcha_code.is_empty() { 
+                warn!("Captcha recognition failed (empty result), retrying...");
+                continue; 
+            }
+            debug!("Captcha recognized: {}", captcha_code);
+
+            let adwmh_login = self.client.login_with_captcha(username, password, 0, &captcha_code).await?;
+            if adwmh_login["code"].as_i64() == Some(10000) {
+                info!("ADWMH login successful");
+                login_success_info = Some(adwmh_login);
+                break;
+            } else {
+                warn!("ADWMH login failed: {:?}", adwmh_login);
+            }
+        }
+        
+        // Master 分支逻辑：ADWMH 登录必须成功，否则整个登录失败
+        let login_info = login_success_info.ok_or_else(|| anyhow!("ADWMH login failed after 5 attempts"))?;
+        
+        let user_obj = &login_info["object"]["user"];
+        let user = User {
+            username: user_obj["userName"].as_str().unwrap_or("").to_string(),
+            id_number: user_obj["idNumber"].as_str().unwrap_or("").to_string(),
+        };
+
+        info!("Fetching CAS login page...");
+        let (login_page_html, current_url) = self.client.fetch_login_info().await?;
+        
+        // 检查是否已经登录 (重定向到了首页)
+        let current_url_str = current_url.as_str();
+        if current_url_str.ends_with("/student/home") || current_url_str == JWXT_HOME {
+            info!("Already logged in (redirected to home). Skipping CAS login.");
+            let verify = self.client.get_grade_sheet_entry().await;
+            match verify {
+                Ok(_) => {
+                    info!("Session verification successful (Grade sheet accessible).");
+                    // 打印 Cookie
+                    debug!("Cookies: {}", self.client.get_cookies_flat_json());
+                    return Ok(user);
+                },
+                Err(e) => {
+                    warn!("Session verification failed despite being on home page: {}. Forcing re-login...", e);
+                    // 如果验证失败，说明 Cookie 其实是坏的，或者被软拦截了。
+                    // 这里可以选择继续往下走（尝试 CAS 登录），或者报错。
+                    // 继续往下走可能会因为没有 LT 参数而失败。
+                    // 最好的办法是：清除 Cookie，重新开始？
+                    // 暂时先让它继续往下走，看看 Parser 能不能解析出东西（大概率不能，因为在 Home 页）。
+                }
+            }
+        }
+
+        let (lt, execution, action) = match Parser::parse_cas_params(&login_page_html) {
+            Some(params) => params,
+            None => {
+                // 如果解析失败，可能是因为 ADWMH 登录后 Cookie 已过期，CAS 页面不是预期的登录页
+                // 或者是因为已经被重定向到了其他页面
+                error!("CAS param parse failed. Current URL: {}", current_url_str);
+                // 打印一部分 HTML 以供调试，但截断以防止日志过长
+                let preview_len = std::cmp::min(login_page_html.len(), 500);
+                error!("HTML content (first {} chars): {:.500}", preview_len, login_page_html);
+                return Err(anyhow!("Failed to parse CAS login params from {}", current_url_str));
+            }
+        };
+        
+        info!("CAS params extracted: lt={}, execution={}, action={}", lt, execution, action);
+
+        // Kotlin 使用 length() (UTF-16 char count)，Rust len() 是 byte count。
+        // 为了与 Java 行为完全一致（包括 Emoji 等 surrogate pairs），必须使用 UTF-16 code units count。
+        let ul = username.encode_utf16().count();
+        let pl = password.encode_utf16().count();
+
+        let cipher = DES::str_enc(&format!("{}{}{}", username, password, lt), "1", "2", "3");
+
+        info!("Performing device login...");
+        self.client.device_login(
+            "https://one.ahu.edu.cn/cas/device",
+            ul,
+            pl,
+            &cipher
+        ).await.context("Device login failed")?;
+
+        let login_url = if action.starts_with("http") {
+            action
+        } else {
+            format!("https://one.ahu.edu.cn{}", action)
+        };
+
+        info!("Performing JWXT CAS login to: {}", login_url);
+        let response = self.client.jwxt_login(
+            &login_url,
+            &cipher,
+            ul,
+            pl,
+            &lt,
+            &execution,
+            "submit"
+        ).await.context("CAS login request failed")?;
+
+        // if (jwxtResponse.raw().request.url.toString().endsWith(Constants.JWXT_HOME))
+        let final_url = response.url().as_str();
+        info!("JWXT login final URL: {}", final_url);
+
+        if final_url == JWXT_HOME || final_url.ends_with("/student/home") {
+            info!("JWXT login success verified");
+            Ok(user)
+        } else {
+            warn!("JWXT login failed (redirect mismatch). Expected ending with /student/home");
+            Err(anyhow!("JWXT Login failed: redirected to {}", final_url))
+        }
+    }
+
+    pub async fn get_schedule(&self) -> Result<Vec<Course>> {
+        info!("[RustSDKSchedule] Starting get_schedule...");
+        self.client.log_current_cookies();
+
+        let basic_info_html = self.client.fetch_course_table_basic_info().await?;
+        info!("[RustSDKSchedule] Fetched basic info HTML. Size: {}", basic_info_html.len());
+
+        // Check if it's a login page
+        if basic_info_html.contains("<title>登入页面</title>") || basic_info_html.contains("id=\"loginForm\"") {
+            error!("[RustSDKSchedule] Detected login page instead of course table. Session expired or invalid.");
+            return Err(anyhow!("Session expired or invalid. Redirected to login page."));
+        }
+
+        let (semester_id, semester_name) = Parser::parse_current_semester(&basic_info_html)
+            .ok_or_else(|| {
+                error!("[RustSDKSchedule] Failed to parse current semester ID");
+                anyhow!("Failed to parse current semester ID")
+            })?;
+        
+        info!("[RustSDKSchedule] Parsed semester: id={}, name={}", semester_id, semester_name);
+
+        let course_json = self.client.get_course(semester_id, semester_id, false).await?;
+        debug!("[RustSDKSchedule] Course JSON: {:?}", course_json);
+
+        // 检查返回的 JSON 中是否有错误提示
+        if let Some(err_msg) = course_json.get("message").and_then(|v| v.as_str()) {
+             warn!("[RustSDKSchedule] Server returned message: {}", err_msg);
+        }
+
+        let mut courses = Vec::new();
+
+        let activities_opt = course_json.get("studentTableVms")
+            .and_then(|v| v.get(0))
+            .and_then(|v| v.get("activities"))
+            .and_then(|v| v.as_array());
+
+        // 如果 activities 为空，可能是因为 Master 分支使用了不同的学期 ID
+        // 尝试检查是否获取到了正确的学期 ID。如果 semester_id 与当前实际学期不符，可能导致查不到课。
+        // Master 分支代码：val courseTable = JwxtApi.API.getCourse(currentSemesterJson.id, currentSemesterJson.id)
+        // SDK 代码：self.client.get_course(semester_id, semester_id, false)
+        // 参数一致。
+        
+        if activities_opt.is_none() {
+             error!("[RustSDKSchedule] 'studentTableVms[0].activities' not found or not an array. JSON keys: {:?}", course_json.as_object().map(|o| o.keys().collect::<Vec<_>>()));
+             // 这里不直接报错，而是允许返回空列表，因为有些时候确实没课
+             // return Err(anyhow!("Invalid course table JSON structure"));
+        }
+
+        if let Some(activities) = activities_opt {
+            info!("[RustSDKSchedule] Found {} activities", activities.len());
+
+            for (idx, act) in activities.iter().enumerate() {
+                let mut week_indexes: Vec<i32> = serde_json::from_value(act["weekIndexes"].clone())
+                    .unwrap_or_default();
+                week_indexes.sort_unstable();
+
+                if week_indexes.is_empty() {
+                    warn!("[RustSDKSchedule] Activity {} has empty weekIndexes, skipping.", idx);
+                    continue;
+                }
+
+                let start_week = *week_indexes.first().unwrap();
+                let end_week = *week_indexes.last().unwrap();
+
+                let start_unit = act["startUnit"].as_i64().unwrap_or(1);
+                let end_unit = act["endUnit"].as_i64().unwrap_or(1);
+                let length = end_unit - start_unit + 1;
+
+                let teacher = if let Some(arr) = act["teacherNames"].as_array() {
+                    arr.iter().map(|v| v.as_str().unwrap_or("")).collect::<Vec<_>>().join(",")
+                } else {
+                    act["teacherNames"].as_str().unwrap_or("").to_string()
+                };
+
+                let weekday_str = if let Some(n) = act["weekday"].as_i64() {
+                    n.to_string()
+                } else if let Some(s) = act["weekday"].as_str() {
+                    s.to_string()
+                } else {
+                    act["weekday"].to_string() // Fallback, though risky if it's null or object
+                };
+
+                let lesson_id_str = if let Some(n) = act["lessonId"].as_i64() {
+                    n.to_string()
+                } else if let Some(s) = act["lessonId"].as_str() {
+                    s.to_string()
+                } else {
+                    act["lessonId"].to_string()
+                };
+
+                let course = Course {
+                    name: act["courseName"].as_str().unwrap_or("").to_string(),
+                    teacher,
+                    location: act["room"].as_str().unwrap_or("未知").to_string(),
+                    week_indexes,
+                    start_week: start_week.to_string(),
+                    end_week: end_week.to_string(),
+                    start_time: start_unit.to_string(),
+                    length: length.to_string(),
+                    weekday: weekday_str,
+                    course_id: lesson_id_str,
+                };
+                // info!("[RustSDKSchedule] Parsed course: {}", course.name);
+                courses.push(course);
+            }
+        } else {
+            warn!("[RustSDKSchedule] No activities found in response.");
+        }
+
+        info!("[RustSDKSchedule] Successfully parsed {} courses.", courses.len());
+        Ok(courses)
+    }
+
+    pub async fn get_exam_info(&self) -> Result<Vec<Exam>> {
+        let html = self.client.get_exam_info().await?;
+        let exams = Parser::parse_exam_info(&html);
+
+        if exams.is_empty() {
+
+        }
+
+        Ok(exams)
+    }
+
+    pub async fn get_grade(&self, student_id: Option<String>) -> Result<Value> {
+        let id = match student_id {
+            Some(id) => id,
+            None => {
+                // getStudentId()
+                let _ = self.client.get_grade_sheet_entry().await?;
+                // 实际在 Rust 客户端中，可能需要通过 response 的 url 获取 ID
+                // 这里暂时假设调用者应该传递 ID，或者我们需要扩展 Client 来暴露最后的 URL
+                return Err(anyhow!("Student ID is required"));
+            }
+        };
+
+        let grade_json = self.client.get_grade_info(&id).await?;
+        Ok(grade_json)
+    }
+
+    pub async fn get_qrcode(&self) -> Result<Value> {
+        Ok(self.client.get_qrcode().await?)
+    }
+
+    pub async fn get_balance(&self) -> Result<Value> {
+        Ok(self.client.get_balance().await?)
+    }
+}
