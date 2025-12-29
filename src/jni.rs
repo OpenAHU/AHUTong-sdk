@@ -1,6 +1,7 @@
-use jni::JNIEnv;
+use jni::{JNIEnv, JavaVM, NativeMethod};
 use jni::objects::{JClass, JString};
-use jni::sys::{jstring, jint, jboolean};
+use jni::sys::{jstring, jint, JNI_VERSION_1_6};
+use std::ffi::c_void;
 use std::sync::OnceLock;
 use tokio::runtime::Runtime;
 use crate::data::api::client::AHUClient;
@@ -39,9 +40,62 @@ fn get_auth_manager() -> &'static AuthManager {
     })
 }
 
-/// 对应 Java: package com.ahu.ahutong.sdk.RustSDK; public static native void init(String cookiesJson);
 #[unsafe(no_mangle)]
-pub extern "system" fn Java_com_ahu_ahutong_sdk_RustSDK_init(
+pub extern "system" fn JNI_OnLoad(vm: JavaVM, _reserved: *mut c_void) -> jint {
+    let mut env = vm.get_env().expect("Cannot get reference to the JNIEnv");
+
+    let class_name = "com/ahu/ahutong/sdk/RustSDK";
+    let clazz = env.find_class(class_name).expect("Cannot find RustSDK class");
+
+    let methods = [
+        NativeMethod {
+            name: "init".into(),
+            sig: "(Ljava/lang/String;)V".into(),
+            fn_ptr: init as *mut c_void,
+        },
+        NativeMethod {
+            name: "dumpCookies".into(),
+            sig: "()Ljava/lang/String;".into(),
+            fn_ptr: dump_cookies as *mut c_void,
+        },
+        NativeMethod {
+            name: "login".into(),
+            sig: "(Ljava/lang/String;Ljava/lang/String;)Ljava/lang/String;".into(),
+            fn_ptr: login as *mut c_void,
+        },
+        NativeMethod {
+            name: "getSchedule".into(),
+            sig: "()Ljava/lang/String;".into(),
+            fn_ptr: get_schedule as *mut c_void,
+        },
+        NativeMethod {
+            name: "refreshToken".into(),
+            sig: "()Ljava/lang/String;".into(),
+            fn_ptr: refresh_token as *mut c_void,
+        },
+        NativeMethod {
+            name: "getCookiesList".into(),
+            sig: "()Ljava/lang/String;".into(),
+            fn_ptr: get_cookies_list as *mut c_void,
+        },
+        NativeMethod {
+            name: "getQrcode".into(),
+            sig: "()Ljava/lang/String;".into(),
+            fn_ptr: get_qrcode as *mut c_void,
+        },
+        NativeMethod {
+            name: "getBalance".into(),
+            sig: "()Ljava/lang/String;".into(),
+            fn_ptr: get_balance as *mut c_void,
+        },
+    ];
+
+    env.register_native_methods(clazz, &methods).expect("Failed to register native methods");
+
+    JNI_VERSION_1_6
+}
+
+pub extern "system" fn init(
     mut env: JNIEnv,
     _class: JClass,
     cookies_json: JString,
@@ -58,9 +112,7 @@ pub extern "system" fn Java_com_ahu_ahutong_sdk_RustSDK_init(
     }
 }
 
-/// 对应 Java: public static native String dumpCookies();
-#[unsafe(no_mangle)]
-pub extern "system" fn Java_com_ahu_ahutong_sdk_RustSDK_dumpCookies(
+pub extern "system" fn dump_cookies(
     mut env: JNIEnv,
     _class: JClass,
 ) -> jstring {
@@ -70,10 +122,7 @@ pub extern "system" fn Java_com_ahu_ahutong_sdk_RustSDK_dumpCookies(
     output.into_raw()
 }
 
-/// 对应 Java: public static native String login(String username, String password);
-/// 返回: JSON String (User 对象或错误信息)
-#[unsafe(no_mangle)]
-pub extern "system" fn Java_com_ahu_ahutong_sdk_RustSDK_login(
+pub extern "system" fn login(
     mut env: JNIEnv,
     _class: JClass,
     username: JString,
@@ -106,9 +155,7 @@ pub extern "system" fn Java_com_ahu_ahutong_sdk_RustSDK_login(
     }
 }
 
-/// 对应 Java: public static native String getSchedule();
-#[unsafe(no_mangle)]
-pub extern "system" fn Java_com_ahu_ahutong_sdk_RustSDK_getSchedule(
+pub extern "system" fn get_schedule(
     mut env: JNIEnv,
     _class: JClass,
 ) -> jstring {
@@ -129,9 +176,7 @@ pub extern "system" fn Java_com_ahu_ahutong_sdk_RustSDK_getSchedule(
     }
 }
 
-/// 对应 Java: public static native String refreshToken();
-#[unsafe(no_mangle)]
-pub extern "system" fn Java_com_ahu_ahutong_sdk_RustSDK_refreshToken(
+pub extern "system" fn refresh_token(
     mut env: JNIEnv,
     _class: JClass,
 ) -> jstring {
@@ -146,9 +191,7 @@ pub extern "system" fn Java_com_ahu_ahutong_sdk_RustSDK_refreshToken(
     }
 }
 
-/// 对应 Java: public static native String getCookiesList();
-#[unsafe(no_mangle)]
-pub extern "system" fn Java_com_ahu_ahutong_sdk_RustSDK_getCookiesList(
+pub extern "system" fn get_cookies_list(
     mut env: JNIEnv,
     _class: JClass,
 ) -> jstring {
@@ -157,9 +200,7 @@ pub extern "system" fn Java_com_ahu_ahutong_sdk_RustSDK_getCookiesList(
     env.new_string(json).unwrap().into_raw()
 }
 
-/// 对应 Java: public static native String getQrcode();
-#[unsafe(no_mangle)]
-pub extern "system" fn Java_com_ahu_ahutong_sdk_RustSDK_getQrcode(
+pub extern "system" fn get_qrcode(
     mut env: JNIEnv,
     _class: JClass,
 ) -> jstring {
@@ -180,9 +221,7 @@ pub extern "system" fn Java_com_ahu_ahutong_sdk_RustSDK_getQrcode(
     }
 }
 
-/// 对应 Java: public static native String getBalance();
-#[unsafe(no_mangle)]
-pub extern "system" fn Java_com_ahu_ahutong_sdk_RustSDK_getBalance(
+pub extern "system" fn get_balance(
     mut env: JNIEnv,
     _class: JClass,
 ) -> jstring {
