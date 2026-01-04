@@ -142,4 +142,10 @@ impl AHUClient {
                 cookie.name(), cookie.domain(), cookie.path(), cookie.secure(), cookie.expires());
         }
     }
+
+    pub fn clear_cookies(&self) {
+        let mut store = self.cookie_store.lock().unwrap();
+        *store = reqwest_cookie_store::CookieStore::default();
+        log::info!("[RustSDKCookie] All cookies cleared.")
+    }
 }

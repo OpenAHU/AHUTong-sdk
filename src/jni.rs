@@ -109,6 +109,8 @@ pub extern "system" fn init(
     let crawler = get_crawler();
     if !json.is_empty() {
         crawler.client.load_cookies_json(&json);
+    } else {
+        crawler.client.clear_cookies();
     }
 }
 
