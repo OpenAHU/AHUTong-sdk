@@ -268,12 +268,41 @@ impl Crawler {
 
     pub async fn get_exam_info(&self) -> Result<Vec<Exam>> {
         let html = self.client.get_exam_info().await?;
-        let exams = Parser::parse_exam_info(&html);
+        let re = regex::Regex::new(r"(?s)studentExamInfoVms\s*=\s*(\[.*?]);").unwrap();
 
-        if exams.is_empty() {
+        let json_str = re.captures(&html)
+            .and_then(|caps| caps.get(1))
+            .map(|m| m.as_str())
+            .ok_or_else(|| anyhow!("Failed to extract studentExamInfoVms from HTML"))?;
 
+        let fixed_json = json_str.replace("'", "\"");
+
+        let items: Vec<Value> = serde_json::from_str(&fixed_json)
+            .context("Failed to parse extracted JSON")?;
+
+        let mut exams = Vec::new();
+        for item in items {
+            let course_name = item["course"]["nameZh"].as_str().unwrap_or("");
+            let exam_type = item["examType"]["nameZh"].as_str().unwrap_or("");
+            let course_display = format!("{}({})", course_name, exam_type);
+
+            let time = item["examTime"].as_str().unwrap_or("").to_string();
+            let seat_num = item["seatNo"].to_string();
+
+            let campus = item["requiredCampus"]["nameZh"].as_str().unwrap_or("");
+            let room = item["room"].as_str().unwrap_or("");
+            let location = format!("{}-{}", campus, room);
+
+            let finished = item["finished"].as_bool().unwrap_or(false);
+
+            exams.push(Exam {
+                course: course_display,
+                time,
+                seat_num,
+                location,
+                finished
+            });
         }
-
         Ok(exams)
     }
 
@@ -281,11 +310,13 @@ impl Crawler {
         let id = match student_id {
             Some(id) => id,
             None => {
-                // getStudentId()
-                let _ = self.client.get_grade_sheet_entry().await?;
-                // 实际在 Rust 客户端中，可能需要通过 response 的 url 获取 ID
-                // 这里暂时假设调用者应该传递 ID，或者我们需要扩展 Client 来暴露最后的 URL
-                return Err(anyhow!("Student ID is required"));
+                // 自动获取 ID
+                let url = self.client.get_grade_sheet_entry_url().await?;
+                let parts: Vec<&str> = url.split('/').collect();
+                parts.last()
+                    .map(|s| s.to_string())
+                    .filter(|s| !s.is_empty())
+                    .ok_or_else(|| anyhow!("Failed to extract Student ID from URL: {}", url))?
             }
         };
 
@@ -299,5 +330,14 @@ impl Crawler {
 
     pub async fn get_balance(&self) -> Result<Value> {
         Ok(self.client.get_balance().await?)
+    }
+
+    pub async fn download_calendar(&self, save_path: &str) -> Result<()> {
+        let url = "http://47.236.115.210:5000/download/xiaoli.jpg";
+        info!("Downloading calendar from {}", url);
+        let bytes = self.client.http.get(url).send().await?.bytes().await?;
+        std::fs::write(save_path, bytes)?;
+        info!("Calendar saved to {}", save_path);
+        Ok(())
     }
 }

@@ -1,6 +1,6 @@
 use jni::{JNIEnv, JavaVM, NativeMethod};
 use jni::objects::{JClass, JString};
-use jni::sys::{jstring, jint, JNI_VERSION_1_6};
+use jni::sys::{jstring, jint, jboolean, JNI_VERSION_1_6};
 use std::ffi::c_void;
 use std::sync::OnceLock;
 use tokio::runtime::Runtime;
@@ -87,6 +87,21 @@ pub extern "system" fn JNI_OnLoad(vm: JavaVM, _reserved: *mut c_void) -> jint {
             name: "getBalance".into(),
             sig: "()Ljava/lang/String;".into(),
             fn_ptr: get_balance as *mut c_void,
+        },
+        NativeMethod {
+            name: "getExamInfo".into(),
+            sig: "()Ljava/lang/String;".into(),
+            fn_ptr: get_exam_info as *mut c_void,
+        },
+        NativeMethod {
+            name: "getGrade".into(),
+            sig: "()Ljava/lang/String;".into(),
+            fn_ptr: get_grade as *mut c_void,
+        },
+        NativeMethod {
+            name: "downloadSchoolCalendar".into(),
+            sig: "(Ljava/lang/String;)Z".into(),
+            fn_ptr: download_school_calendar as *mut c_void,
         },
     ];
 
@@ -240,6 +255,74 @@ pub extern "system" fn get_balance(
         Err(e) => {
             let err_json = serde_json::json!({ "error": e.to_string() });
             env.new_string(err_json.to_string()).unwrap().into_raw()
+        }
+    }
+}
+
+pub extern "system" fn get_exam_info(
+    mut env: JNIEnv,
+    _class: JClass,
+) -> jstring {
+    init_logger();
+    let result = get_runtime().block_on(async {
+        get_crawler().get_exam_info().await
+    });
+
+    match result {
+        Ok(val) => {
+            let json = serde_json::to_string(&val).unwrap();
+            env.new_string(json).expect("Couldn't create java string").into_raw()
+        },
+        Err(e) => {
+            let err_json = serde_json::json!({ "error": e.to_string() });
+            env.new_string(err_json.to_string()).expect("Couldn't create java string").into_raw()
+        }
+    }
+}
+
+pub extern "system" fn get_grade(
+    mut env: JNIEnv,
+    _class: JClass,
+) -> jstring {
+    init_logger();
+    let result = get_runtime().block_on(async {
+        // 传入 None 自动获取 ID
+        get_crawler().get_grade(None).await
+    });
+
+    match result {
+        Ok(val) => {
+            let json = serde_json::to_string(&val).unwrap();
+            env.new_string(json).unwrap().into_raw()
+        },
+        Err(e) => {
+            let err_json = serde_json::json!({ "error": e.to_string() });
+            env.new_string(err_json.to_string()).unwrap().into_raw()
+        }
+    }
+}
+
+
+pub extern "system" fn download_school_calendar(
+    mut env: JNIEnv,
+    _class: JClass,
+    save_path: JString,
+) -> jboolean {
+    init_logger();
+    let path: String = match env.get_string(&save_path) {
+        Ok(s) => s.into(),
+        Err(_) => return 0,
+    };
+
+    let result = get_runtime().block_on(async {
+        get_crawler().download_calendar(&path).await
+    });
+
+    match result {
+        Ok(_) => 1,
+        Err(e) => {
+            error!("Failed to download calendar: {:?}", e);
+            0
         }
     }
 }

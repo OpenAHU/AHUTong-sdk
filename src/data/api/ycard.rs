@@ -25,16 +25,24 @@ impl AHUClient {
             .await
     }
 
-    // @GET("/berserker-app/ykt/tsm/queryCard")
-    pub async fn load_card_recharge(&self) -> Result<Value> {
-        let builder = self.http
-            .get(format!("{}/berserker-app/ykt/tsm/queryCard", BASE_URL))
-            .query(&[("scene", "cardRecharge"), ("synAccessSource", "h5")]);
+    // @GET("/berserker-app/ykt/tsm/queryCard") -> @GET("/campus-card/")
+    pub async fn load_card_recharge(&self) -> Result<String> {
+        let token = {
+            let token_guard = self.ycard_token.read().await;
+            token_guard.as_deref().unwrap_or("").to_string()
+        };
 
-        self.with_auth(builder).await
+        self.http
+            .get(format!("{}/campus-card/", BASE_URL))
+            .query(&[
+                ("name", "cardRecharge"),
+                ("appId", "27"),
+                ("synAccessSource", "h5"),
+                ("synjones-auth", &token)
+            ])
             .send()
             .await?
-            .json::<Value>()
+            .text()
             .await
     }
 

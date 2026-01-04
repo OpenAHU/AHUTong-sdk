@@ -59,14 +59,22 @@ impl AHUClient {
             .await
     }
 
-    // @GET("/student/for-std/exam-arrange/info/96223")
+    // @GET("/student/for-std/exam-arrange")
     pub async fn get_exam_info(&self) -> Result<String> {
         self.http
-            .get(format!("{}/student/for-std/exam-arrange/info/96223", BASE_URL))
+            .get(format!("{}/student/for-std/exam-arrange", BASE_URL))
             .send()
             .await?
             .text()
             .await
+    }
+
+    pub async fn get_grade_sheet_entry_url(&self) -> Result<String> {
+        let resp = self.http
+            .get(format!("{}/student/for-std/grade/sheet", BASE_URL))
+            .send()
+            .await?;
+        Ok(resp.url().to_string())
     }
 
     // @GET("/student/for-std/grade/sheet")
