@@ -103,6 +103,11 @@ pub extern "system" fn JNI_OnLoad(vm: JavaVM, _reserved: *mut c_void) -> jint {
             sig: "(Ljava/lang/String;)Z".into(),
             fn_ptr: download_school_calendar as *mut c_void,
         },
+        NativeMethod {
+            name: "getUpdateLog".into(),
+            sig: "()Ljava/lang/String;".into(),
+            fn_ptr: get_update_log as *mut c_void,
+        },
     ];
 
     env.register_native_methods(clazz, &methods).expect("Failed to register native methods");
@@ -325,4 +330,16 @@ pub extern "system" fn download_school_calendar(
             0
         }
     }
+}
+pub extern "system" fn get_update_log(
+    mut env: JNIEnv,
+    _class: JClass,
+) -> jstring {
+    init_logger();
+    let update_log = r#"
+        1. 修复了上个版本遗留的一些bug，如：充值问题，考场查询问题，课表问题等，详见commits
+        2. 更新了免责声明
+        3. 完成了热更新，将爬虫类接口使用rust进行了重写，并实现了动态下发.so文件以实现热更新
+    "#;
+    env.new_string(update_log).expect("Couldn't create java string!").into_raw()
 }
