@@ -108,6 +108,11 @@ pub extern "system" fn JNI_OnLoad(vm: JavaVM, _reserved: *mut c_void) -> jint {
             sig: "()Ljava/lang/String;".into(),
             fn_ptr: get_update_log as *mut c_void,
         },
+        NativeMethod {
+            name: "getVersionName".into(),
+            sig: "()Ljava/lang/String;".into(),
+            fn_ptr: get_version_name as *mut c_void,
+        },
     ];
 
     env.register_native_methods(clazz, &methods).expect("Failed to register native methods");
@@ -342,4 +347,16 @@ pub extern "system" fn get_update_log(
         3. 完成了热更新，将爬虫类接口使用rust进行了重写，并实现了动态下发.so文件以实现热更新
     "#;
     env.new_string(update_log).expect("Couldn't create java string!").into_raw()
+}
+
+pub extern "system" fn get_version_name(
+    mut env: JNIEnv,
+    _class: JClass,
+) -> jstring {
+    init_logger();
+    // 这里可以定义动态下发的版本号
+    // 建议格式：App版本号(RustSDK版本号) 或者 直接覆盖
+    // 这里演示返回 Rust SDK 的版本号，例如 "1.0.0 (HotFix)"
+    let version = "1.0.0 (HotFix)"; 
+    env.new_string(version).expect("Couldn't create java string!").into_raw()
 }
