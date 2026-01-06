@@ -15,5 +15,7 @@ pub mod utils {
     pub mod parser;
 }
 
+pub mod updater;
+
 #[cfg(target_os = "android")]
 pub mod jni;

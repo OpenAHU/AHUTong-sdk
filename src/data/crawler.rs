@@ -30,7 +30,7 @@ impl Crawler {
             }
             debug!("Auth code bytes length: {}", auth_code_bytes.len());
 
-            let captcha_res = self.client.get_captcha_result("https://openahu.org/ocr/captcha", auth_code_bytes.to_vec()).await;
+            let captcha_res = self.client.get_captcha_result("https://118.25.8.226/ocr/captcha", auth_code_bytes.to_vec()).await;
             
             let captcha_code = match captcha_res {
                 Ok(res) => {

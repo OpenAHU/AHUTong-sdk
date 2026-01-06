@@ -118,6 +118,16 @@ pub extern "system" fn JNI_OnLoad(vm: JavaVM, _reserved: *mut c_void) -> jint {
             sig: "()Ljava/lang/String;".into(),
             fn_ptr: get_update_config_url as *mut c_void,
         },
+        NativeMethod {
+            name: "downloadUpdate".into(),
+            sig: "(Ljava/lang/String;Ljava/lang/String;Ljava/lang/String;Ljava/lang/String;)Z".into(),
+            fn_ptr: download_update as *mut c_void,
+        },
+        NativeMethod {
+            name: "getApiServerIp".into(),
+            sig: "()Ljava/lang/String;".into(),
+            fn_ptr: get_api_server_ip as *mut c_void,
+        },
     ];
 
     env.register_native_methods(clazz, &methods).expect("Failed to register native methods");
@@ -382,7 +392,7 @@ pub extern "system" fn get_update_log(
     let update_log = r#"
 【2026-01-07 v3.0.1 更新内容】
 1. 将服务器迁移至带宽更高、稳定性更强的新服务器
-2. 全面将 HTTP 升级为 HTTPS，防止中间人攻击，提升数据传输安全性
+2. 全面将 HTTP 升级为 HTTPS，使用ED25519对动态下发的.so文件进行签名，防止中间人攻击，提升数据传输安全性
 3. 更新校历查看逻辑，支持先预览后自主选择是否下载
 4. 修改 allowBackup="false"，提高安全性
 
@@ -431,3 +441,55 @@ pub extern "system" fn get_update_config_url(
         .into_raw()
 }
 
+pub extern "system" fn download_update(
+    mut env: JNIEnv,
+    _class: JClass,
+    url: JString,
+    save_path: JString,
+    expected_sha256: JString,
+    signature: JString,
+) -> jboolean {
+    init_logger();
+    let url: String = match env.get_string(&url) {
+        Ok(s) => s.into(),
+        Err(_) => return 0,
+    };
+    let save_path: String = match env.get_string(&save_path) {
+        Ok(s) => s.into(),
+        Err(_) => return 0,
+    };
+    let expected_sha256: String = match env.get_string(&expected_sha256) {
+        Ok(s) => s.into(),
+        Err(_) => return 0,
+    };
+    let signature: String = match env.get_string(&signature) {
+        Ok(s) => s.into(),
+        Err(_) => return 0,
+    };
+
+    info!("Starting update download from {} to {}", url, save_path);
+
+    let result = get_runtime().block_on(async {
+        crate::updater::download_and_verify_update(&url, &save_path, &expected_sha256, &signature).await
+    });
+
+    match result {
+        Ok(_) => {
+            info!("Update downloaded and verified successfully");
+            1
+        },
+        Err(e) => {
+            error!("Update failed: {:?}", e);
+            0
+        }
+    }
+}
+
+pub extern "system" fn get_api_server_ip(
+    mut env: JNIEnv,
+    _class: JClass,
+) -> jstring {
+    init_logger();
+    let ip = "118.25.8.226";
+    env.new_string(ip).expect("Couldn't create java string!").into_raw()
+}

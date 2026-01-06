@@ -74,12 +74,14 @@ impl AHUClient {
         // 添加 User-Agent 和 Connection: close 以提高兼容性
         let client = reqwest::Client::builder()
             .http1_only()
+            .danger_accept_invalid_certs(true)
             .user_agent("AHUTong/Android")
             .build()?;
 
         client
             .post(url)
             .header("Connection", "close")
+            .header("Host", "openahu.org")
             .multipart(form)
             .send()
             .await?
