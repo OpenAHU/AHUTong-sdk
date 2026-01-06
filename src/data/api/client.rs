@@ -15,6 +15,8 @@ impl AHUClient {
         let cookie_store = Arc::new(CookieStoreMutex::default());
 
         let http = ClientBuilder::new()
+            .connect_timeout(std::time::Duration::from_secs(5))
+            .timeout(std::time::Duration::from_secs(20))
             .cookie_provider(cookie_store.clone())
             .redirect(reqwest::redirect::Policy::limited(10))
             .user_agent("Mozilla/5.0 (Linux; Android 10; K) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Mobile Safari/537.36")

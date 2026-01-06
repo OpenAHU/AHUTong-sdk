@@ -1,5 +1,5 @@
 use jni::{JNIEnv, JavaVM, NativeMethod};
-use jni::objects::{JClass, JString};
+use jni::objects::{JClass, JObject, JString};
 use jni::sys::{jstring, jint, jboolean, JNI_VERSION_1_6};
 use std::ffi::c_void;
 use std::sync::OnceLock;
@@ -112,6 +112,11 @@ pub extern "system" fn JNI_OnLoad(vm: JavaVM, _reserved: *mut c_void) -> jint {
             name: "getVersionName".into(),
             sig: "()Ljava/lang/String;".into(),
             fn_ptr: get_version_name as *mut c_void,
+        },
+        NativeMethod {
+            name: "getUpdateConfigUrl".into(),
+            sig: "()Ljava/lang/String;".into(),
+            fn_ptr: get_update_config_url as *mut c_void,
         },
     ];
 
@@ -313,50 +318,116 @@ pub extern "system" fn get_grade(
 }
 
 
+#[unsafe(no_mangle)]
 pub extern "system" fn download_school_calendar(
     mut env: JNIEnv,
     _class: JClass,
     save_path: JString,
 ) -> jboolean {
     init_logger();
+
     let path: String = match env.get_string(&save_path) {
-        Ok(s) => s.into(),
-        Err(_) => return 0,
+        Ok(s) => {
+            let s_str: String = s.into();
+            info!("JNI: Received save path from Java: {}", s_str);
+            s_str
+        },
+        Err(e) => {
+            error!("JNI: Failed to convert Java string to Rust string: {:?}", e);
+            return 0;
+        }
     };
 
+    info!("JNI: Starting async download task...");
+
     let result = get_runtime().block_on(async {
-        get_crawler().download_calendar(&path).await
+        let start_time = std::time::Instant::now();
+
+        let task_result = tokio::time::timeout(
+            std::time::Duration::from_secs(120),
+            get_crawler().download_calendar(&path)
+        ).await;
+
+        let duration = start_time.elapsed();
+        info!("JNI: Async task finished in {:.2?}", duration);
+
+        task_result
     });
 
     match result {
-        Ok(_) => 1,
-        Err(e) => {
-            error!("Failed to download calendar: {:?}", e);
+        Ok(Ok(_)) => {
+            info!("JNI: Download function returned SUCCESS.");
+            1
+        },
+        Ok(Err(e)) => {
+            error!("JNI: Download logic failed!");
+            error!("--- Error Chain Start ---");
+            error!("Root Error: {:?}", e);
+            error!("--- Error Chain End ---");
+            0
+        }
+        Err(_) => {
+            error!("JNI: CRITICAL - Download task TIMED OUT after 60 seconds!");
+            error!("JNI: This usually indicates network blockage or very slow connection.");
             0
         }
     }
 }
 pub extern "system" fn get_update_log(
     mut env: JNIEnv,
-    _class: JClass,
+    _this: JObject,
 ) -> jstring {
     init_logger();
+
     let update_log = r#"
-        1. 修复了上个版本遗留的一些bug，如：充值问题，考场查询问题，课表问题等，详见commits
-        2. 更新了免责声明
-        3. 完成了热更新，将爬虫类接口使用rust进行了重写，并实现了动态下发.so文件以实现热更新
-    "#;
-    env.new_string(update_log).expect("Couldn't create java string!").into_raw()
+【2026-01-07 v3.0.1 更新内容】
+1. 将服务器迁移至带宽更高、稳定性更强的新服务器
+2. 全面将 HTTP 升级为 HTTPS，防止中间人攻击，提升数据传输安全性
+3. 更新校历查看逻辑，支持先预览后自主选择是否下载
+4. 修改 allowBackup="false"，提高安全性
+
+
+
+【2025-01-05 v3.0.0 更新内容】
+1. 修复了上个版本遗留的一些 bug：
+   - 充值异常问题
+   - 考场查询异常
+   - 课表显示问题
+   （详见 commits 记录）
+
+2. 更新并完善了免责声明说明
+
+3. 完成热更新机制：
+   - 使用 Rust 重写核心爬虫相关接口
+   - 支持动态下发 .so 文件，实现无需发版的功能更新
+"#;
+
+    env
+        .new_string(update_log)
+        .expect("Couldn't create java string!")
+        .into_raw()
 }
 
+
 pub extern "system" fn get_version_name(
+    mut env: JNIEnv,
+    _this: JObject,
+) -> jstring {
+    init_logger();
+    // 暂时不用这个
+    let version = "1.0.0 (HotFix)"; 
+    env.new_string(version).expect("Couldn't create java string!").into_raw()
+}
+
+pub extern "system" fn get_update_config_url(
     mut env: JNIEnv,
     _class: JClass,
 ) -> jstring {
     init_logger();
-    // 这里可以定义动态下发的版本号
-    // 建议格式：App版本号(RustSDK版本号) 或者 直接覆盖
-    // 这里演示返回 Rust SDK 的版本号，例如 "1.0.0 (HotFix)"
-    let version = "1.0.0 (HotFix)"; 
-    env.new_string(version).expect("Couldn't create java string!").into_raw()
+
+    let url = "https://openahu.org/api/check_update";
+    env.new_string(url)
+        .expect("Couldn't create java string!")
+        .into_raw()
 }
+
