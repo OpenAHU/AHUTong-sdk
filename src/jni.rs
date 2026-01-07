@@ -395,6 +395,7 @@ pub extern "system" fn get_update_log(
 2. 全面将 HTTP 升级为 HTTPS，使用ED25519对动态下发的.so文件进行签名，防止中间人攻击，提升数据传输安全性
 3. 更新校历查看逻辑，支持先预览后自主选择是否下载
 4. 修改 allowBackup="false"，提高安全性
+5. 修改教室名称对应 mmap
 
 
 
