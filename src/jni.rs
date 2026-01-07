@@ -396,6 +396,7 @@ pub extern "system" fn get_update_log(
 3. 更新校历查看逻辑，支持先预览后自主选择是否下载
 4. 修改 allowBackup="false"，提高安全性
 5. 修改教室名称对应 mmap
+6. 增加电话本搜索功能
 
 
 
