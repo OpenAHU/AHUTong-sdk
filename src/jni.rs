@@ -1,8 +1,8 @@
 use jni::{JNIEnv, JavaVM, NativeMethod};
-use jni::objects::{JClass, JObject, JString};
-use jni::sys::{jstring, jint, jboolean, JNI_VERSION_1_6};
+use jni::objects::{JClass, JObject, JString, GlobalRef, JValue};
+use jni::sys::{jstring, jint, jlong, jboolean, JNI_VERSION_1_6};
 use std::ffi::c_void;
-use std::sync::OnceLock;
+use std::sync::{OnceLock, Arc};
 use tokio::runtime::Runtime;
 use crate::data::api::client::AHUClient;
 use crate::data::crawler::Crawler;
@@ -127,6 +127,21 @@ pub extern "system" fn JNI_OnLoad(vm: JavaVM, _reserved: *mut c_void) -> jint {
             name: "getApiServerIp".into(),
             sig: "()Ljava/lang/String;".into(),
             fn_ptr: get_api_server_ip as *mut c_void,
+        },
+        NativeMethod {
+            name: "checkApkUpdate".into(),
+            sig: "(J)Ljava/lang/String;".into(),
+            fn_ptr: check_apk_update as *mut c_void,
+        },
+        NativeMethod {
+            name: "downloadApkUpdate".into(),
+            sig: "(Ljava/lang/String;Ljava/lang/String;Ljava/lang/String;Ljava/lang/String;)Z".into(),
+            fn_ptr: download_apk_update as *mut c_void,
+        },
+        NativeMethod {
+            name: "downloadApkUpdateWithProgress".into(),
+            sig: "(Ljava/lang/String;Ljava/lang/String;Ljava/lang/String;Ljava/lang/String;Lcom/ahu/ahutong/sdk/ProgressCallback;)Z".into(),
+            fn_ptr: download_apk_update_with_progress as *mut c_void,
         },
     ];
 
@@ -390,15 +405,16 @@ pub extern "system" fn get_update_log(
     init_logger();
 
     let update_log = r#"
-【2026-01-07 v3.0.1 更新内容】
+【2026-01-09 v3.0.1 更新内容】
 1. 将服务器迁移至带宽更高、稳定性更强的新服务器
-2. 全面将 HTTP 升级为 HTTPS，使用ED25519对动态下发的.so文件进行签名，防止中间人攻击，提升数据传输安全性
+2. 全面将 HTTP 升级为 HTTPS，使用ED25519对动态下发的文件进行签名，防止中间人攻击，提升数据传输安全性
 3. 更新校历查看逻辑，支持先预览后自主选择是否下载
 4. 修改 allowBackup="false"，提高安全性
-5. 修改教室名称对应 mmap
+5. 修改课表教室名称对应 mmap
 6. 增加电话本搜索功能
-
-
+7. 充值改为数字键盘
+8. 添加意见反馈功能
+9. 增加app内请求更新功能，一次下载，终身使用，再也不用到qq群手动更新了
 
 【2025-01-05 v3.0.0 更新内容】
 1. 修复了上个版本遗留的一些 bug：
@@ -406,9 +422,7 @@ pub extern "system" fn get_update_log(
    - 考场查询异常
    - 课表显示问题
    （详见 commits 记录）
-
 2. 更新并完善了免责声明说明
-
 3. 完成热更新机制：
    - 使用 Rust 重写核心爬虫相关接口
    - 支持动态下发 .so 文件，实现无需发版的功能更新
@@ -494,4 +508,177 @@ pub extern "system" fn get_api_server_ip(
     init_logger();
     let ip = "118.25.8.226";
     env.new_string(ip).expect("Couldn't create java string!").into_raw()
+}
+
+pub extern "system" fn check_apk_update(
+    mut env: JNIEnv,
+    _class: JClass,
+    current_version_code: jlong,
+) -> jstring {
+    init_logger();
+
+    info!("checkApkUpdate called. current_version_code={}", current_version_code);
+
+    let result = get_runtime().block_on(async {
+        crate::updater::check_apk_update(current_version_code as i64).await
+    });
+
+    match result {
+        Ok(info_obj) => {
+            let json = serde_json::to_string(&info_obj).unwrap_or_else(|e| {
+                serde_json::json!({ "error": format!("serialize failed: {}", e) }).to_string()
+            });
+            env.new_string(json).unwrap().into_raw()
+        }
+        Err(e) => {
+            error!("checkApkUpdate failed: {:?}", e);
+            let err_json = serde_json::json!({ "error": e.to_string() }).to_string();
+            env.new_string(err_json).unwrap().into_raw()
+        }
+    }
+}
+
+pub extern "system" fn download_apk_update(
+    mut env: JNIEnv,
+    _class: JClass,
+    url: JString,
+    save_path: JString,
+    expected_sha256: JString,
+    signature: JString,
+) -> jboolean {
+    init_logger();
+
+    let url: String = match env.get_string(&url) {
+        Ok(s) => s.into(),
+        Err(_) => return 0,
+    };
+    let save_path: String = match env.get_string(&save_path) {
+        Ok(s) => s.into(),
+        Err(_) => return 0,
+    };
+    let expected_sha256: String = match env.get_string(&expected_sha256) {
+        Ok(s) => s.into(),
+        Err(_) => return 0,
+    };
+    let signature: String = match env.get_string(&signature) {
+        Ok(s) => s.into(),
+        Err(_) => return 0,
+    };
+
+    info!("downloadApkUpdate: {} -> {}", url, save_path);
+
+    let result = get_runtime().block_on(async {
+        crate::updater::download_and_verify_update(
+            &url,
+            &save_path,
+            &expected_sha256,
+            &signature,
+        )
+            .await
+    });
+
+    match result {
+        Ok(_) => {
+            info!("downloadApkUpdate success");
+            1
+        }
+        Err(e) => {
+            error!("downloadApkUpdate failed: {:?}", e);
+            0
+        }
+    }
+}
+
+pub extern "system" fn download_apk_update_with_progress(
+    mut env: JNIEnv,
+    _class: JClass,
+    url: JString,
+    save_path: JString,
+    expected_sha256: JString,
+    signature: JString,
+    callback: JObject,
+) -> jboolean {
+    init_logger();
+
+    let url: String = match env.get_string(&url) {
+        Ok(s) => s.into(),
+        Err(_) => return 0,
+    };
+    let save_path: String = match env.get_string(&save_path) {
+        Ok(s) => s.into(),
+        Err(_) => return 0,
+    };
+    let expected_sha256: String = match env.get_string(&expected_sha256) {
+        Ok(s) => s.into(),
+        Err(_) => return 0,
+    };
+    let signature: String = match env.get_string(&signature) {
+        Ok(s) => s.into(),
+        Err(_) => return 0,
+    };
+
+    let cb_global: GlobalRef = match env.new_global_ref(callback) {
+        Ok(r) => r,
+        Err(e) => {
+            error!("downloadApkUpdateWithProgress: new_global_ref failed: {:?}", e);
+            return 0;
+        }
+    };
+
+    let jvm = match env.get_java_vm() {
+        Ok(vm) => vm,
+        Err(e) => {
+            error!("downloadApkUpdateWithProgress: get_java_vm failed: {:?}", e);
+            return 0;
+        }
+    };
+
+    info!(
+        "downloadApkUpdateWithProgress: {} -> {}",
+        url, save_path
+    );
+
+    let cb_global = Arc::new(cb_global);
+
+    let result = get_runtime().block_on(async {
+        let cb = cb_global.clone();
+
+        crate::updater::download_and_verify_update_with_progress(
+            &url,
+            &save_path,
+            &expected_sha256,
+            &signature,
+            move |downloaded: u64, total: i64| {
+                let mut env = match jvm.attach_current_thread() {
+                    Ok(e) => e,
+                    Err(e) => {
+                        error!("downloadApkUpdateWithProgress: attach_current_thread failed: {:?}", e);
+                        return;
+                    }
+                };
+
+                // callback.onProgress(downloaded, total)
+                let args = &[
+                    JValue::Long(downloaded as i64),
+                    JValue::Long(total as i64),
+                ];
+
+                if let Err(e) = env.call_method(cb.as_obj(), "onProgress", "(JJ)V", args) {
+                    error!("downloadApkUpdateWithProgress: call onProgress failed: {:?}", e);
+                }
+            },
+        )
+            .await
+    });
+
+    match result {
+        Ok(_) => {
+            info!("downloadApkUpdateWithProgress success");
+            1
+        }
+        Err(e) => {
+            error!("downloadApkUpdateWithProgress failed: {:?}", e);
+            0
+        }
+    }
 }
