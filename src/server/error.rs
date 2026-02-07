@@ -2,7 +2,10 @@ use axum::{http::StatusCode, response::IntoResponse, Json};
 use serde::Serialize;
 
 #[derive(Debug)]
-pub struct AppError(pub anyhow::Error);
+pub enum AppError {
+    Anyhow(anyhow::Error),
+    Status(StatusCode),
+}
 
 #[derive(Debug, Serialize)]
 pub struct ErrorBody {
@@ -11,18 +14,32 @@ pub struct ErrorBody {
 
 impl IntoResponse for AppError {
     fn into_response(self) -> axum::response::Response {
-        let body = Json(ErrorBody {
-            error: self.0.to_string(),
-        });
-        (StatusCode::INTERNAL_SERVER_ERROR, body).into_response()
+        match self {
+            AppError::Anyhow(err) => {
+                let body = Json(ErrorBody {
+                    error: err.to_string(),
+                });
+                (StatusCode::INTERNAL_SERVER_ERROR, body).into_response()
+            }
+            AppError::Status(code) => code.into_response(),
+        }
     }
 }
 
-impl<E> From<E> for AppError
-where
-    E: Into<anyhow::Error>,
-{
-    fn from(e: E) -> Self {
-        Self(e.into())
+// Explicitly implement From<anyhow::Error> instead of generic E to avoid conflict
+impl From<anyhow::Error> for AppError {
+    fn from(e: anyhow::Error) -> Self {
+        Self::Anyhow(e)
+    }
+}
+
+// This handles ? on Result<T, anyhow::Error> automatically? 
+// No, ? uses Into<AppError>. 
+// If I have Result<T, anyhow::Error>, e.into() -> AppError.
+// So From<anyhow::Error> is enough for that.
+
+impl From<StatusCode> for AppError {
+    fn from(s: StatusCode) -> Self {
+        Self::Status(s)
     }
 }

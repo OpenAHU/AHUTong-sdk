@@ -5,7 +5,6 @@ use crate::data::model::{User, Course, Exam};
 use anyhow::{Context, Result, anyhow};
 use serde_json::Value;
 use log::{info, debug, warn, error};
-use std::path::Path;
 
 const JWXT_HOME: &str = "https://jw.ahu.edu.cn/student/home";
 

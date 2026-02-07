@@ -1,4 +1,3 @@
-use std::sync::{Arc, RwLock};
 use crate::data::api::client::AHUClient;
 use serde_json::Value;
 use reqwest::Result;
