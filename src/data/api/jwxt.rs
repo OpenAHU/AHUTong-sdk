@@ -1,4 +1,4 @@
-use std::fmt::format;
+use std::sync::{Arc, RwLock};
 use crate::data::api::client::AHUClient;
 use serde_json::Value;
 use reqwest::{Result, Response};
@@ -23,7 +23,7 @@ impl AHUClient {
     pub async fn get_course(
         &self,
         semester_path_id: i32,
-        semester_query_id: i32,
+        _semester_query_id: i32,
         has_experiment: bool
     ) -> Result<Value> {
         let url = format!("{}/student/for-std/course-table/semester/{}/print-data", BASE_URL, semester_path_id);

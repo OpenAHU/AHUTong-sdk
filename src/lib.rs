@@ -19,3 +19,7 @@ pub mod updater;
 
 #[cfg(target_os = "android")]
 pub mod jni;
+
+pub mod core;
+#[cfg(feature = "server")]
+pub mod server;

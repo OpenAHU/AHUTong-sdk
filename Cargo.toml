@@ -5,7 +5,7 @@ edition = "2024"
 
 [lib]
 name = "ahutong_rs"
-crate-type = ["cdylib"]
+crate-type = ["cdylib", "rlib"]
 
 [profile.release]
 opt-level = "z"
@@ -33,3 +33,16 @@ sha2 = "0.10.9"
 ed25519-dalek = "2.2.0"
 hex = "0.4.3"
 base64 = "0.22.1"
+
+env_logger = "0.11"
+
+#Server
+axum = { version = "0.7", optional = true }
+tower = "0.5"
+tower-http = { version = "0.6", features = ["trace"], optional = true }
+rand = "0.8"
+
+[features]
+default = []
+server = ["axum", "tower-http"]
+

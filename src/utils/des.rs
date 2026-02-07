@@ -1,4 +1,3 @@
-use std::convert::TryInto;
 
 pub struct DES;
 

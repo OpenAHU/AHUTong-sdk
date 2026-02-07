@@ -2,43 +2,9 @@ use jni::{JNIEnv, JavaVM, NativeMethod};
 use jni::objects::{JClass, JObject, JString, GlobalRef, JValue};
 use jni::sys::{jstring, jint, jlong, jboolean, JNI_VERSION_1_6};
 use std::ffi::c_void;
-use std::sync::{OnceLock, Arc};
-use tokio::runtime::Runtime;
-use crate::data::api::client::AHUClient;
-use crate::data::crawler::Crawler;
-use crate::data::auth::AuthManager;
-use android_logger::Config;
-use log::{info, error, LevelFilter};
-
-static CRAWLER: OnceLock<Crawler> = OnceLock::new();
-static AUTH_MANAGER: OnceLock<AuthManager> = OnceLock::new();
-static RUNTIME: OnceLock<Runtime> = OnceLock::new();
-
-fn init_logger() {
-    android_logger::init_once(
-        Config::default()
-            .with_max_level(LevelFilter::Debug)
-            .with_tag("RustSDK"),
-    );
-}
-
-fn get_runtime() -> &'static Runtime {
-    RUNTIME.get_or_init(|| Runtime::new().unwrap())
-}
-
-fn get_crawler() -> &'static Crawler {
-    CRAWLER.get_or_init(|| {
-        let client = AHUClient::new();
-        Crawler::new(client)
-    })
-}
-
-fn get_auth_manager() -> &'static AuthManager {
-    AUTH_MANAGER.get_or_init(|| {
-        let client = get_crawler().client.clone();
-        AuthManager::new(client)
-    })
-}
+use std::sync::Arc;
+use log::{info, error};
+use crate::server;
 
 #[unsafe(no_mangle)]
 pub extern "system" fn JNI_OnLoad(vm: JavaVM, _reserved: *mut c_void) -> jint {
@@ -143,6 +109,16 @@ pub extern "system" fn JNI_OnLoad(vm: JavaVM, _reserved: *mut c_void) -> jint {
             sig: "(Ljava/lang/String;Ljava/lang/String;Ljava/lang/String;Ljava/lang/String;Lcom/ahu/ahutong/sdk/ProgressCallback;)Z".into(),
             fn_ptr: download_apk_update_with_progress as *mut c_void,
         },
+        NativeMethod {
+            name: "startServer".into(),
+            sig: "(I)Ljava/lang/String;".into(),
+            fn_ptr: start_server as *mut c_void,
+        },
+        NativeMethod {
+            name: "stopServer".into(),
+            sig: "()V".into(),
+            fn_ptr: stop_server as *mut c_void,
+        },
     ];
 
     env.register_native_methods(clazz, &methods).expect("Failed to register native methods");
@@ -155,28 +131,23 @@ pub extern "system" fn init(
     _class: JClass,
     cookies_json: JString,
 ) {
-    init_logger();
+    crate::core::init_logger();
     info!("Rust SDK Initialized");
 
-    let json: String = env.get_string(&cookies_json).expect("Couldn't get java string!").into();
+    let json: String = env.get_string(&cookies_json)
+        .expect("Couldn't get java string!")
+        .into();
 
-    // 初始化并加载 Cookie
-    let crawler = get_crawler();
-    if !json.is_empty() {
-        crawler.client.load_cookies_json(&json);
-    } else {
-        crawler.client.clear_cookies();
-    }
+    crate::core::load_or_clear_cookies(&json);
 }
 
 pub extern "system" fn dump_cookies(
     mut env: JNIEnv,
     _class: JClass,
 ) -> jstring {
-    init_logger();
-    let cookies = get_crawler().client.dump_cookies_json();
-    let output = env.new_string(cookies).expect("Couldn't create java string!");
-    output.into_raw()
+    crate::core::init_logger();
+    let cookies = crate::core::crawler().client.dump_cookies_json();
+    env.new_string(cookies).unwrap().into_raw()
 }
 
 pub extern "system" fn login(
@@ -185,14 +156,12 @@ pub extern "system" fn login(
     username: JString,
     password: JString,
 ) -> jstring {
-    init_logger();
+    crate::core::init_logger();
     let username: String = env.get_string(&username).expect("Invalid username").into();
     let password: String = env.get_string(&password).expect("Invalid password").into();
-    
-    info!("Starting login for user: {}", username);
 
-    let result = get_runtime().block_on(async {
-        get_crawler().login(&username, &password).await
+    let result = crate::core::runtime().block_on(async {
+        crate::core::crawler().login(&username, &password).await
     });
 
     match result {
@@ -217,8 +186,8 @@ pub extern "system" fn get_schedule(
     _class: JClass,
 ) -> jstring {
     init_logger();
-    let result = get_runtime().block_on(async {
-        get_crawler().get_schedule().await
+    let result = crate::core::runtime().block_on(async {
+        crate::core::crawler().get_schedule().await
     });
 
     match result {
@@ -237,14 +206,17 @@ pub extern "system" fn refresh_token(
     mut env: JNIEnv,
     _class: JClass,
 ) -> jstring {
-    init_logger();
-    let result = get_runtime().block_on(async {
+    crate::core::init_logger();
+    let result = crate::core::runtime().block_on(async {
         get_auth_manager().refresh_token().await
     });
 
     match result {
         Ok(token) => env.new_string(token).unwrap().into_raw(),
-        Err(e) => env.new_string(format!("ERROR: {}", e)).unwrap().into_raw()
+        Err(e) => {
+            let err = serde_json::json!({ "error": e.to_string() });
+            env.new_string(err.to_string()).unwrap().into_raw()
+        }
     }
 }
 
@@ -252,8 +224,8 @@ pub extern "system" fn get_cookies_list(
     mut env: JNIEnv,
     _class: JClass,
 ) -> jstring {
-    init_logger();
-    let json = get_crawler().client.get_cookies_flat_json();
+    crate::core::init_logger();
+    let json = crate::core::crawler().client.get_cookies_flat_json();
     env.new_string(json).unwrap().into_raw()
 }
 
@@ -261,9 +233,9 @@ pub extern "system" fn get_qrcode(
     mut env: JNIEnv,
     _class: JClass,
 ) -> jstring {
-    init_logger();
-    let result = get_runtime().block_on(async {
-        get_crawler().get_qrcode().await
+    crate::core::init_logger();
+    let result = crate::core::runtime().block_on(async {
+        crate::core::crawler().get_qrcode().await
     });
 
     match result {
@@ -282,9 +254,9 @@ pub extern "system" fn get_balance(
     mut env: JNIEnv,
     _class: JClass,
 ) -> jstring {
-    init_logger();
-    let result = get_runtime().block_on(async {
-        get_crawler().get_balance().await
+    crate::core::init_logger();
+    let result = crate::core::runtime().block_on(async {
+        crate::core::crawler().get_balance().await
     });
 
     match result {
@@ -303,9 +275,9 @@ pub extern "system" fn get_exam_info(
     mut env: JNIEnv,
     _class: JClass,
 ) -> jstring {
-    init_logger();
-    let result = get_runtime().block_on(async {
-        get_crawler().get_exam_info().await
+    crate::core::init_logger();
+    let result = crate::core::runtime().block_on(async {
+        crate::core::crawler().get_exam_info().await
     });
 
     match result {
@@ -324,10 +296,10 @@ pub extern "system" fn get_grade(
     mut env: JNIEnv,
     _class: JClass,
 ) -> jstring {
-    init_logger();
-    let result = get_runtime().block_on(async {
+    crate::core::init_logger();
+    let result = crate::core::runtime().block_on(async {
         // 传入 None 自动获取 ID
-        get_crawler().get_grade(None).await
+        crate::core::crawler().get_grade(None).await
     });
 
     match result {
@@ -349,7 +321,7 @@ pub extern "system" fn download_school_calendar(
     _class: JClass,
     save_path: JString,
 ) -> jboolean {
-    init_logger();
+    crate::core::init_logger();
 
     let path: String = match env.get_string(&save_path) {
         Ok(s) => {
@@ -365,12 +337,12 @@ pub extern "system" fn download_school_calendar(
 
     info!("JNI: Starting async download task...");
 
-    let result = get_runtime().block_on(async {
+    let result = crate::core::runtime().block_on(async {
         let start_time = std::time::Instant::now();
 
         let task_result = tokio::time::timeout(
             std::time::Duration::from_secs(120),
-            get_crawler().download_calendar(&path)
+            crate::core::crawler().download_calendar(&path)
         ).await;
 
         let duration = start_time.elapsed();
@@ -402,7 +374,7 @@ pub extern "system" fn get_update_log(
     mut env: JNIEnv,
     _this: JObject,
 ) -> jstring {
-    init_logger();
+    crate::core::init_logger();
 
     let update_log = r#"
 【2026-01-09 v3.0.1 更新内容】
@@ -439,7 +411,7 @@ pub extern "system" fn get_version_name(
     mut env: JNIEnv,
     _this: JObject,
 ) -> jstring {
-    init_logger();
+    crate::core::init_logger();
     // 暂时不用这个
     let version = "1.0.0 (HotFix)"; 
     env.new_string(version).expect("Couldn't create java string!").into_raw()
@@ -449,7 +421,7 @@ pub extern "system" fn get_update_config_url(
     mut env: JNIEnv,
     _class: JClass,
 ) -> jstring {
-    init_logger();
+    crate::core::init_logger();
 
     let url = "https://openahu.org/api/check_update";
     env.new_string(url)
@@ -465,7 +437,7 @@ pub extern "system" fn download_update(
     expected_sha256: JString,
     signature: JString,
 ) -> jboolean {
-    init_logger();
+    crate::core::init_logger();
     let url: String = match env.get_string(&url) {
         Ok(s) => s.into(),
         Err(_) => return 0,
@@ -485,7 +457,7 @@ pub extern "system" fn download_update(
 
     info!("Starting update download from {} to {}", url, save_path);
 
-    let result = get_runtime().block_on(async {
+    let result = crate::core::runtime().block_on(async {
         crate::updater::download_and_verify_update(&url, &save_path, &expected_sha256, &signature).await
     });
 
@@ -505,7 +477,7 @@ pub extern "system" fn get_api_server_ip(
     mut env: JNIEnv,
     _class: JClass,
 ) -> jstring {
-    init_logger();
+    crate::core::init_logger();
     let ip = "118.25.8.226";
     env.new_string(ip).expect("Couldn't create java string!").into_raw()
 }
@@ -515,11 +487,11 @@ pub extern "system" fn check_apk_update(
     _class: JClass,
     current_version_code: jlong,
 ) -> jstring {
-    init_logger();
+    crate::core::init_logger();
 
     info!("checkApkUpdate called. current_version_code={}", current_version_code);
 
-    let result = get_runtime().block_on(async {
+    let result = crate::core::runtime().block_on(async {
         crate::updater::check_apk_update(current_version_code as i64).await
     });
 
@@ -546,7 +518,7 @@ pub extern "system" fn download_apk_update(
     expected_sha256: JString,
     signature: JString,
 ) -> jboolean {
-    init_logger();
+    crate::core::init_logger();
 
     let url: String = match env.get_string(&url) {
         Ok(s) => s.into(),
@@ -567,7 +539,7 @@ pub extern "system" fn download_apk_update(
 
     info!("downloadApkUpdate: {} -> {}", url, save_path);
 
-    let result = get_runtime().block_on(async {
+    let result = crate::core::runtime().block_on(async {
         crate::updater::download_and_verify_update(
             &url,
             &save_path,
@@ -598,7 +570,7 @@ pub extern "system" fn download_apk_update_with_progress(
     signature: JString,
     callback: JObject,
 ) -> jboolean {
-    init_logger();
+    crate::core::init_logger();
 
     let url: String = match env.get_string(&url) {
         Ok(s) => s.into(),
@@ -640,7 +612,7 @@ pub extern "system" fn download_apk_update_with_progress(
 
     let cb_global = Arc::new(cb_global);
 
-    let result = get_runtime().block_on(async {
+    let result = crate::core::runtime().block_on(async {
         let cb = cb_global.clone();
 
         crate::updater::download_and_verify_update_with_progress(
@@ -681,4 +653,40 @@ pub extern "system" fn download_apk_update_with_progress(
             0
         }
     }
+}
+
+pub extern "system" fn start_server(
+    mut env: JNIEnv,
+    _class: JClass,
+    port: jint,
+) -> jstring {
+    crate::core::init_logger();
+
+    let result = crate::core::runtime().block_on(async {
+        server::start(port as u16).await
+    });
+
+    match result {
+        Ok(info) => {
+            let resp = serde_json::json!({
+                "port": info.addr.port(),
+                "token": info.token,
+            });
+            env.new_string(resp.to_string()).unwrap().into_raw()
+        }
+        Err(e) => {
+            let err = serde_json::json!({ "error": e.to_string() });
+            env.new_string(err.to_string()).unwrap().into_raw()
+        }
+    }
+}
+
+pub extern "system" fn stop_server(
+    _env: JNIEnv,
+    _class: JClass,
+) {
+    crate::core::init_logger();
+    let _ = crate::core::runtime().block_on(async {
+        server::stop().await
+    });
 }
