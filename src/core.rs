@@ -14,9 +14,14 @@ pub fn init_logger() {
     {
         use android_logger::Config;
         use log::LevelFilter;
+        let max_level = if cfg!(debug_assertions) {
+            LevelFilter::Debug
+        } else {
+            LevelFilter::Off
+        };
         android_logger::init_once(
             Config::default()
-                .with_max_level(LevelFilter::Debug)
+                .with_max_level(max_level)
                 .with_tag("RustSDK"),
         );
     }
@@ -24,7 +29,9 @@ pub fn init_logger() {
     #[cfg(not(target_os = "android"))]
     {
         // 如果你要桌面端调试 main.rs，这里建议加 env_logger（见后面 Cargo.toml）
-        let _ = env_logger::builder().is_test(false).try_init();
+        if cfg!(debug_assertions) {
+            let _ = env_logger::builder().is_test(false).try_init();
+        }
     }
 }
 

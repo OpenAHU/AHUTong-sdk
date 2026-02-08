@@ -99,6 +99,17 @@ curl.exe -X POST http://127.0.0.1:3000/init `
 
 ## Android 编译构建
 
+### 编译并输出到 jniLibs/arm64-v8a（推荐）
+如果你希望编译后直接把 `*.so` 放到 Android 工程的 `jniLibs/arm64-v8a` 目录下，可以指定输出目录：
+```bash
+# 输出到当前仓库的 ./jniLibs/arm64-v8a
+cargo ndk -t arm64-v8a -o ./jniLibs build --release
+
+# 如需包含本地服务器功能
+cargo ndk -t arm64-v8a -o ./jniLibs build --release --features server
+```
+输出文件示例：`./jniLibs/arm64-v8a/libahutong_rs.so`
+
 ### 包含本地服务器 (JNI + HTTP Server)
 适用于需要通过 HTTP 接口调用 Rust 核心功能的场景。
 ```bash

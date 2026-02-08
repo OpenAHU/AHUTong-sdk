@@ -185,7 +185,7 @@ pub extern "system" fn get_schedule(
     mut env: JNIEnv,
     _class: JClass,
 ) -> jstring {
-    init_logger();
+    crate::core::init_logger();
     let result = crate::core::runtime().block_on(async {
         crate::core::crawler().get_schedule().await
     });
@@ -208,7 +208,7 @@ pub extern "system" fn refresh_token(
 ) -> jstring {
     crate::core::init_logger();
     let result = crate::core::runtime().block_on(async {
-        get_auth_manager().refresh_token().await
+        crate::core::auth_manager().refresh_token().await
     });
 
     match result {
