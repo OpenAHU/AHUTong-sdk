@@ -4,6 +4,7 @@ use jni::sys::{jstring, jint, jlong, jboolean, JNI_VERSION_1_6};
 use std::ffi::c_void;
 use std::sync::Arc;
 use log::{info, error};
+#[cfg(feature = "server")]
 use crate::server;
 
 #[unsafe(no_mangle)]
@@ -121,7 +122,13 @@ pub extern "system" fn JNI_OnLoad(vm: JavaVM, _reserved: *mut c_void) -> jint {
         },
     ];
 
-    env.register_native_methods(clazz, &methods).expect("Failed to register native methods");
+    let (core_methods, extended_methods) = methods.split_at(19);
+
+    env.register_native_methods(&clazz, core_methods).expect("Failed to register core native methods");
+
+    if let Err(e) = env.register_native_methods(&clazz, extended_methods) {
+        info!("Extended native methods not registered (expected on legacy APK): {:?}", e);
+    }
 
     JNI_VERSION_1_6
 }
@@ -662,22 +669,31 @@ pub extern "system" fn start_server(
 ) -> jstring {
     crate::core::init_logger();
 
-    let result = crate::core::runtime().block_on(async {
-        server::start(port as u16).await
-    });
+    #[cfg(feature = "server")]
+    {
+        let result: Result<crate::server::ServerInfo, anyhow::Error> = crate::core::runtime().block_on(async {
+            server::start(port as u16).await
+        });
 
-    match result {
-        Ok(info) => {
-            let resp = serde_json::json!({
-                "port": info.addr.port(),
-                "token": info.token,
-            });
-            env.new_string(resp.to_string()).unwrap().into_raw()
+        match result {
+            Ok(info) => {
+                let resp = serde_json::json!({
+                    "port": info.addr.port(),
+                    "token": info.token,
+                });
+                env.new_string(resp.to_string()).unwrap().into_raw()
+            }
+            Err(e) => {
+                let err = serde_json::json!({ "error": e.to_string() });
+                env.new_string(err.to_string()).unwrap().into_raw()
+            }
         }
-        Err(e) => {
-            let err = serde_json::json!({ "error": e.to_string() });
-            env.new_string(err.to_string()).unwrap().into_raw()
-        }
+    }
+
+    #[cfg(not(feature = "server"))]
+    {
+        let err = serde_json::json!({ "error": "Server feature not enabled in this build" });
+        env.new_string(err.to_string()).unwrap().into_raw()
     }
 }
 
@@ -686,6 +702,7 @@ pub extern "system" fn stop_server(
     _class: JClass,
 ) {
     crate::core::init_logger();
+    #[cfg(feature = "server")]
     let _ = crate::core::runtime().block_on(async {
         server::stop().await
     });
