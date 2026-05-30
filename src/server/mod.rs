@@ -1,14 +1,17 @@
-pub mod routes;
-pub mod handlers;
 pub mod dto;
 pub mod error;
+pub mod handlers;
+pub mod routes;
 
 use std::{net::SocketAddr, sync::OnceLock};
 
 use anyhow::Result;
-use tokio::{net::TcpListener, sync::{Mutex, oneshot}};
+use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
 use rand::RngCore;
-use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine as _};
+use tokio::{
+    net::TcpListener,
+    sync::{Mutex, oneshot},
+};
 
 use crate::core;
 use crate::server::handlers::AppState;
@@ -43,11 +46,16 @@ pub async fn start(port: u16) -> Result<ServerInfo> {
     let mut guard = server_cell().lock().await;
     if let Some(h) = guard.as_ref() {
         // 已经启动过就直接返回（幂等）
-        return Ok(ServerInfo { addr: h.addr, token: h.token.clone() });
+        return Ok(ServerInfo {
+            addr: h.addr,
+            token: h.token.clone(),
+        });
     }
 
     let token = gen_token();
-    let state = AppState { token: token.clone() };
+    let state = AppState {
+        token: token.clone(),
+    };
 
     let listener = TcpListener::bind(("127.0.0.1", port)).await?;
     let addr = listener.local_addr()?;
@@ -70,7 +78,7 @@ pub async fn start(port: u16) -> Result<ServerInfo> {
         token: token.clone(),
     });
 
-    Ok(ServerInfo {addr, token})
+    Ok(ServerInfo { addr, token })
 }
 pub async fn stop() -> Result<()> {
     let mut guard = server_cell().lock().await;

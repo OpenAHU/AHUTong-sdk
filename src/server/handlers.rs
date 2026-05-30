@@ -49,7 +49,10 @@ pub async fn dump_cookies(
 ) -> Result<impl IntoResponse, AppError> {
     check_token(&headers, &state)?;
     let cookies = core::dump_cookies_json();
-    Ok((StatusCode::OK, Json(serde_json::json!({ "cookies": cookies }))))
+    Ok((
+        StatusCode::OK,
+        Json(serde_json::json!({ "cookies": cookies })),
+    ))
 }
 
 pub async fn cookies_flat(
@@ -58,7 +61,10 @@ pub async fn cookies_flat(
 ) -> Result<impl IntoResponse, AppError> {
     check_token(&headers, &state)?;
     let json = core::cookies_flat_json();
-    Ok((StatusCode::OK, Json(serde_json::from_str::<serde_json::Value>(&json).map_err(|e| anyhow::anyhow!(e))?)))
+    Ok((
+        StatusCode::OK,
+        Json(serde_json::from_str::<serde_json::Value>(&json).map_err(|e| anyhow::anyhow!(e))?),
+    ))
 }
 
 pub async fn login(
@@ -68,6 +74,7 @@ pub async fn login(
 ) -> Result<impl IntoResponse, AppError> {
     check_token(&headers, &state)?;
     let user = core::crawler().login(&req.username, &req.password).await?;
+    core::persist_current_cookies();
     Ok((StatusCode::OK, Json(user)))
 }
 
@@ -78,6 +85,19 @@ pub async fn schedule(
     check_token(&headers, &state)?;
     let courses = core::crawler().get_schedule().await?;
     Ok((StatusCode::OK, Json(courses)))
+}
+
+pub async fn current_week(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+) -> Result<impl IntoResponse, AppError> {
+    check_token(&headers, &state)?;
+    let v = core::crawler()
+        .client
+        .get_current_teach_week()
+        .await
+        .map_err(|e| anyhow::anyhow!(e))?;
+    Ok((StatusCode::OK, Json(v)))
 }
 
 pub async fn exam(
@@ -128,5 +148,8 @@ pub async fn refresh_token(
 ) -> Result<impl IntoResponse, AppError> {
     check_token(&headers, &state)?;
     let token = core::auth_manager().refresh_token().await?;
-    Ok((StatusCode::OK, Json(serde_json::json!({ "access_token": token }))))
+    Ok((
+        StatusCode::OK,
+        Json(serde_json::json!({ "access_token": token })),
+    ))
 }

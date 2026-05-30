@@ -1,4 +1,4 @@
-use axum::{http::StatusCode, response::IntoResponse, Json};
+use axum::{Json, http::StatusCode, response::IntoResponse};
 use serde::Serialize;
 
 #[derive(Debug)]
@@ -33,8 +33,8 @@ impl From<anyhow::Error> for AppError {
     }
 }
 
-// This handles ? on Result<T, anyhow::Error> automatically? 
-// No, ? uses Into<AppError>. 
+// This handles ? on Result<T, anyhow::Error> automatically?
+// No, ? uses Into<AppError>.
 // If I have Result<T, anyhow::Error>, e.into() -> AppError.
 // So From<anyhow::Error> is enough for that.
 

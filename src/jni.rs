@@ -1,18 +1,20 @@
-use jni::{JNIEnv, JavaVM, NativeMethod};
-use jni::objects::{JClass, JObject, JString, GlobalRef, JValue};
-use jni::sys::{jstring, jint, jlong, jboolean, JNI_VERSION_1_6};
-use std::ffi::c_void;
-use std::sync::Arc;
-use log::{info, error};
 #[cfg(feature = "server")]
 use crate::server;
+use jni::objects::{GlobalRef, JClass, JObject, JString, JValue};
+use jni::sys::{JNI_VERSION_1_6, jboolean, jint, jlong, jstring};
+use jni::{JNIEnv, JavaVM, NativeMethod};
+use log::{error, info};
+use std::ffi::c_void;
+use std::sync::Arc;
 
 #[unsafe(no_mangle)]
 pub extern "system" fn JNI_OnLoad(vm: JavaVM, _reserved: *mut c_void) -> jint {
     let mut env = vm.get_env().expect("Cannot get reference to the JNIEnv");
 
     let class_name = "com/ahu/ahutong/sdk/RustSDK";
-    let clazz = env.find_class(class_name).expect("Cannot find RustSDK class");
+    let clazz = env
+        .find_class(class_name)
+        .expect("Cannot find RustSDK class");
 
     let methods = [
         NativeMethod {
@@ -116,42 +118,65 @@ pub extern "system" fn JNI_OnLoad(vm: JavaVM, _reserved: *mut c_void) -> jint {
             fn_ptr: start_server as *mut c_void,
         },
         NativeMethod {
+            name: "startServerWithStorage".into(),
+            sig: "(ILjava/lang/String;Ljava/lang/String;)Ljava/lang/String;".into(),
+            fn_ptr: start_server_with_storage as *mut c_void,
+        },
+        NativeMethod {
             name: "stopServer".into(),
             sig: "()V".into(),
             fn_ptr: stop_server as *mut c_void,
+        },
+        NativeMethod {
+            name: "kvPutString".into(),
+            sig: "(Ljava/lang/String;Ljava/lang/String;Ljava/lang/String;)Z".into(),
+            fn_ptr: kv_put_string as *mut c_void,
+        },
+        NativeMethod {
+            name: "kvGetString".into(),
+            sig: "(Ljava/lang/String;Ljava/lang/String;)Ljava/lang/String;".into(),
+            fn_ptr: kv_get_string as *mut c_void,
+        },
+        NativeMethod {
+            name: "kvRemove".into(),
+            sig: "(Ljava/lang/String;Ljava/lang/String;)Z".into(),
+            fn_ptr: kv_remove as *mut c_void,
+        },
+        NativeMethod {
+            name: "kvClearBox".into(),
+            sig: "(Ljava/lang/String;)Z".into(),
+            fn_ptr: kv_clear_box as *mut c_void,
         },
     ];
 
     let (core_methods, extended_methods) = methods.split_at(19);
 
-    env.register_native_methods(&clazz, core_methods).expect("Failed to register core native methods");
+    env.register_native_methods(&clazz, core_methods)
+        .expect("Failed to register core native methods");
 
     if let Err(e) = env.register_native_methods(&clazz, extended_methods) {
-        info!("Extended native methods not registered (expected on legacy APK): {:?}", e);
+        info!(
+            "Extended native methods not registered (expected on legacy APK): {:?}",
+            e
+        );
     }
 
     JNI_VERSION_1_6
 }
 
-pub extern "system" fn init(
-    mut env: JNIEnv,
-    _class: JClass,
-    cookies_json: JString,
-) {
+pub extern "system" fn init(mut env: JNIEnv, _class: JClass, cookies_json: JString) {
     crate::core::init_logger();
     info!("Rust SDK Initialized");
 
-    let json: String = env.get_string(&cookies_json)
+    let json: String = env
+        .get_string(&cookies_json)
         .expect("Couldn't get java string!")
         .into();
 
     crate::core::load_or_clear_cookies(&json);
 }
 
-pub extern "system" fn dump_cookies(
-    mut env: JNIEnv,
-    _class: JClass,
-) -> jstring {
+pub extern "system" fn dump_cookies(mut env: JNIEnv, _class: JClass) -> jstring {
     crate::core::init_logger();
     let cookies = crate::core::crawler().client.dump_cookies_json();
     env.new_string(cookies).unwrap().into_raw()
@@ -167,16 +192,16 @@ pub extern "system" fn login(
     let username: String = env.get_string(&username).expect("Invalid username").into();
     let password: String = env.get_string(&password).expect("Invalid password").into();
 
-    let result = crate::core::runtime().block_on(async {
-        crate::core::crawler().login(&username, &password).await
-    });
+    let result = crate::core::runtime()
+        .block_on(async { crate::core::crawler().login(&username, &password).await });
 
     match result {
         Ok(user) => {
             info!("Login successful for user: {}", user.username);
+            crate::core::persist_current_cookies();
             let json = serde_json::to_string(&user).unwrap();
             env.new_string(json).unwrap().into_raw()
-        },
+        }
         Err(e) => {
             // 如果是因为已经登录（例如重定向到首页），也算成功，但不应该抛出错误
             // 这里我们已经在 crawler.rs 中处理了 "Already logged in" 返回 Ok(user)
@@ -188,20 +213,16 @@ pub extern "system" fn login(
     }
 }
 
-pub extern "system" fn get_schedule(
-    mut env: JNIEnv,
-    _class: JClass,
-) -> jstring {
+pub extern "system" fn get_schedule(mut env: JNIEnv, _class: JClass) -> jstring {
     crate::core::init_logger();
-    let result = crate::core::runtime().block_on(async {
-        crate::core::crawler().get_schedule().await
-    });
+    let result =
+        crate::core::runtime().block_on(async { crate::core::crawler().get_schedule().await });
 
     match result {
         Ok(courses) => {
             let json = serde_json::to_string(&courses).unwrap();
             env.new_string(json).unwrap().into_raw()
-        },
+        }
         Err(e) => {
             let err_json = serde_json::json!({ "error": e.to_string() });
             env.new_string(err_json.to_string()).unwrap().into_raw()
@@ -209,14 +230,10 @@ pub extern "system" fn get_schedule(
     }
 }
 
-pub extern "system" fn refresh_token(
-    mut env: JNIEnv,
-    _class: JClass,
-) -> jstring {
+pub extern "system" fn refresh_token(mut env: JNIEnv, _class: JClass) -> jstring {
     crate::core::init_logger();
-    let result = crate::core::runtime().block_on(async {
-        crate::core::auth_manager().refresh_token().await
-    });
+    let result = crate::core::runtime()
+        .block_on(async { crate::core::auth_manager().refresh_token().await });
 
     match result {
         Ok(token) => env.new_string(token).unwrap().into_raw(),
@@ -227,29 +244,22 @@ pub extern "system" fn refresh_token(
     }
 }
 
-pub extern "system" fn get_cookies_list(
-    mut env: JNIEnv,
-    _class: JClass,
-) -> jstring {
+pub extern "system" fn get_cookies_list(mut env: JNIEnv, _class: JClass) -> jstring {
     crate::core::init_logger();
     let json = crate::core::crawler().client.get_cookies_flat_json();
     env.new_string(json).unwrap().into_raw()
 }
 
-pub extern "system" fn get_qrcode(
-    mut env: JNIEnv,
-    _class: JClass,
-) -> jstring {
+pub extern "system" fn get_qrcode(mut env: JNIEnv, _class: JClass) -> jstring {
     crate::core::init_logger();
-    let result = crate::core::runtime().block_on(async {
-        crate::core::crawler().get_qrcode().await
-    });
+    let result =
+        crate::core::runtime().block_on(async { crate::core::crawler().get_qrcode().await });
 
     match result {
         Ok(val) => {
             let json = serde_json::to_string(&val).unwrap();
             env.new_string(json).unwrap().into_raw()
-        },
+        }
         Err(e) => {
             let err_json = serde_json::json!({ "error": e.to_string() });
             env.new_string(err_json.to_string()).unwrap().into_raw()
@@ -257,20 +267,16 @@ pub extern "system" fn get_qrcode(
     }
 }
 
-pub extern "system" fn get_balance(
-    mut env: JNIEnv,
-    _class: JClass,
-) -> jstring {
+pub extern "system" fn get_balance(mut env: JNIEnv, _class: JClass) -> jstring {
     crate::core::init_logger();
-    let result = crate::core::runtime().block_on(async {
-        crate::core::crawler().get_balance().await
-    });
+    let result =
+        crate::core::runtime().block_on(async { crate::core::crawler().get_balance().await });
 
     match result {
         Ok(val) => {
             let json = serde_json::to_string(&val).unwrap();
             env.new_string(json).unwrap().into_raw()
-        },
+        }
         Err(e) => {
             let err_json = serde_json::json!({ "error": e.to_string() });
             env.new_string(err_json.to_string()).unwrap().into_raw()
@@ -278,31 +284,28 @@ pub extern "system" fn get_balance(
     }
 }
 
-pub extern "system" fn get_exam_info(
-    mut env: JNIEnv,
-    _class: JClass,
-) -> jstring {
+pub extern "system" fn get_exam_info(mut env: JNIEnv, _class: JClass) -> jstring {
     crate::core::init_logger();
-    let result = crate::core::runtime().block_on(async {
-        crate::core::crawler().get_exam_info().await
-    });
+    let result =
+        crate::core::runtime().block_on(async { crate::core::crawler().get_exam_info().await });
 
     match result {
         Ok(val) => {
             let json = serde_json::to_string(&val).unwrap();
-            env.new_string(json).expect("Couldn't create java string").into_raw()
-        },
+            env.new_string(json)
+                .expect("Couldn't create java string")
+                .into_raw()
+        }
         Err(e) => {
             let err_json = serde_json::json!({ "error": e.to_string() });
-            env.new_string(err_json.to_string()).expect("Couldn't create java string").into_raw()
+            env.new_string(err_json.to_string())
+                .expect("Couldn't create java string")
+                .into_raw()
         }
     }
 }
 
-pub extern "system" fn get_grade(
-    mut env: JNIEnv,
-    _class: JClass,
-) -> jstring {
+pub extern "system" fn get_grade(mut env: JNIEnv, _class: JClass) -> jstring {
     crate::core::init_logger();
     let result = crate::core::runtime().block_on(async {
         // 传入 None 自动获取 ID
@@ -313,14 +316,13 @@ pub extern "system" fn get_grade(
         Ok(val) => {
             let json = serde_json::to_string(&val).unwrap();
             env.new_string(json).unwrap().into_raw()
-        },
+        }
         Err(e) => {
             let err_json = serde_json::json!({ "error": e.to_string() });
             env.new_string(err_json.to_string()).unwrap().into_raw()
         }
     }
 }
-
 
 #[unsafe(no_mangle)]
 pub extern "system" fn download_school_calendar(
@@ -335,7 +337,7 @@ pub extern "system" fn download_school_calendar(
             let s_str: String = s.into();
             info!("JNI: Received save path from Java: {}", s_str);
             s_str
-        },
+        }
         Err(e) => {
             error!("JNI: Failed to convert Java string to Rust string: {:?}", e);
             return 0;
@@ -349,8 +351,9 @@ pub extern "system" fn download_school_calendar(
 
         let task_result = tokio::time::timeout(
             std::time::Duration::from_secs(120),
-            crate::core::crawler().download_calendar(&path)
-        ).await;
+            crate::core::crawler().download_calendar(&path),
+        )
+        .await;
 
         let duration = start_time.elapsed();
         info!("JNI: Async task finished in {:.2?}", duration);
@@ -362,7 +365,7 @@ pub extern "system" fn download_school_calendar(
         Ok(Ok(_)) => {
             info!("JNI: Download function returned SUCCESS.");
             1
-        },
+        }
         Ok(Err(e)) => {
             error!("JNI: Download logic failed!");
             error!("--- Error Chain Start ---");
@@ -377,10 +380,7 @@ pub extern "system" fn download_school_calendar(
         }
     }
 }
-pub extern "system" fn get_update_log(
-    mut env: JNIEnv,
-    _this: JObject,
-) -> jstring {
+pub extern "system" fn get_update_log(mut env: JNIEnv, _this: JObject) -> jstring {
     crate::core::init_logger();
 
     let update_log = r#"
@@ -407,27 +407,21 @@ pub extern "system" fn get_update_log(
    - 支持动态下发 .so 文件，实现无需发版的功能更新
 "#;
 
-    env
-        .new_string(update_log)
+    env.new_string(update_log)
         .expect("Couldn't create java string!")
         .into_raw()
 }
 
-
-pub extern "system" fn get_version_name(
-    mut env: JNIEnv,
-    _this: JObject,
-) -> jstring {
+pub extern "system" fn get_version_name(mut env: JNIEnv, _this: JObject) -> jstring {
     crate::core::init_logger();
     // 暂时不用这个
-    let version = "1.0.0 (HotFix)"; 
-    env.new_string(version).expect("Couldn't create java string!").into_raw()
+    let version = "1.0.0 (HotFix)";
+    env.new_string(version)
+        .expect("Couldn't create java string!")
+        .into_raw()
 }
 
-pub extern "system" fn get_update_config_url(
-    mut env: JNIEnv,
-    _class: JClass,
-) -> jstring {
+pub extern "system" fn get_update_config_url(mut env: JNIEnv, _class: JClass) -> jstring {
     crate::core::init_logger();
 
     let url = "https://openahu.org/api/check_update";
@@ -465,14 +459,15 @@ pub extern "system" fn download_update(
     info!("Starting update download from {} to {}", url, save_path);
 
     let result = crate::core::runtime().block_on(async {
-        crate::updater::download_and_verify_update(&url, &save_path, &expected_sha256, &signature).await
+        crate::updater::download_and_verify_update(&url, &save_path, &expected_sha256, &signature)
+            .await
     });
 
     match result {
         Ok(_) => {
             info!("Update downloaded and verified successfully");
             1
-        },
+        }
         Err(e) => {
             error!("Update failed: {:?}", e);
             0
@@ -480,13 +475,12 @@ pub extern "system" fn download_update(
     }
 }
 
-pub extern "system" fn get_api_server_ip(
-    mut env: JNIEnv,
-    _class: JClass,
-) -> jstring {
+pub extern "system" fn get_api_server_ip(mut env: JNIEnv, _class: JClass) -> jstring {
     crate::core::init_logger();
     let ip = "118.25.8.226";
-    env.new_string(ip).expect("Couldn't create java string!").into_raw()
+    env.new_string(ip)
+        .expect("Couldn't create java string!")
+        .into_raw()
 }
 
 pub extern "system" fn check_apk_update(
@@ -496,11 +490,13 @@ pub extern "system" fn check_apk_update(
 ) -> jstring {
     crate::core::init_logger();
 
-    info!("checkApkUpdate called. current_version_code={}", current_version_code);
+    info!(
+        "checkApkUpdate called. current_version_code={}",
+        current_version_code
+    );
 
-    let result = crate::core::runtime().block_on(async {
-        crate::updater::check_apk_update(current_version_code as i64).await
-    });
+    let result = crate::core::runtime()
+        .block_on(async { crate::updater::check_apk_update(current_version_code as i64).await });
 
     match result {
         Ok(info_obj) => {
@@ -547,12 +543,7 @@ pub extern "system" fn download_apk_update(
     info!("downloadApkUpdate: {} -> {}", url, save_path);
 
     let result = crate::core::runtime().block_on(async {
-        crate::updater::download_and_verify_update(
-            &url,
-            &save_path,
-            &expected_sha256,
-            &signature,
-        )
+        crate::updater::download_and_verify_update(&url, &save_path, &expected_sha256, &signature)
             .await
     });
 
@@ -599,7 +590,10 @@ pub extern "system" fn download_apk_update_with_progress(
     let cb_global: GlobalRef = match env.new_global_ref(callback) {
         Ok(r) => r,
         Err(e) => {
-            error!("downloadApkUpdateWithProgress: new_global_ref failed: {:?}", e);
+            error!(
+                "downloadApkUpdateWithProgress: new_global_ref failed: {:?}",
+                e
+            );
             return 0;
         }
     };
@@ -612,10 +606,7 @@ pub extern "system" fn download_apk_update_with_progress(
         }
     };
 
-    info!(
-        "downloadApkUpdateWithProgress: {} -> {}",
-        url, save_path
-    );
+    info!("downloadApkUpdateWithProgress: {} -> {}", url, save_path);
 
     let cb_global = Arc::new(cb_global);
 
@@ -631,23 +622,26 @@ pub extern "system" fn download_apk_update_with_progress(
                 let mut env = match jvm.attach_current_thread() {
                     Ok(e) => e,
                     Err(e) => {
-                        error!("downloadApkUpdateWithProgress: attach_current_thread failed: {:?}", e);
+                        error!(
+                            "downloadApkUpdateWithProgress: attach_current_thread failed: {:?}",
+                            e
+                        );
                         return;
                     }
                 };
 
                 // callback.onProgress(downloaded, total)
-                let args = &[
-                    JValue::Long(downloaded as i64),
-                    JValue::Long(total as i64),
-                ];
+                let args = &[JValue::Long(downloaded as i64), JValue::Long(total as i64)];
 
                 if let Err(e) = env.call_method(cb.as_obj(), "onProgress", "(JJ)V", args) {
-                    error!("downloadApkUpdateWithProgress: call onProgress failed: {:?}", e);
+                    error!(
+                        "downloadApkUpdateWithProgress: call onProgress failed: {:?}",
+                        e
+                    );
                 }
             },
         )
-            .await
+        .await
     });
 
     match result {
@@ -662,18 +656,13 @@ pub extern "system" fn download_apk_update_with_progress(
     }
 }
 
-pub extern "system" fn start_server(
-    mut env: JNIEnv,
-    _class: JClass,
-    port: jint,
-) -> jstring {
+pub extern "system" fn start_server(mut env: JNIEnv, _class: JClass, port: jint) -> jstring {
     crate::core::init_logger();
 
     #[cfg(feature = "server")]
     {
-        let result: Result<crate::server::ServerInfo, anyhow::Error> = crate::core::runtime().block_on(async {
-            server::start(port as u16).await
-        });
+        let result: Result<crate::server::ServerInfo, anyhow::Error> =
+            crate::core::runtime().block_on(async { server::start(port as u16).await });
 
         match result {
             Ok(info) => {
@@ -697,13 +686,195 @@ pub extern "system" fn start_server(
     }
 }
 
-pub extern "system" fn stop_server(
-    _env: JNIEnv,
+pub extern "system" fn start_server_with_storage(
+    mut env: JNIEnv,
     _class: JClass,
-) {
+    port: jint,
+    storage_path: JString,
+    seed_cookies_json: JString,
+) -> jstring {
+    crate::core::init_logger();
+
+    let storage_path: String = match env.get_string(&storage_path) {
+        Ok(s) => s.into(),
+        Err(e) => {
+            let err = serde_json::json!({ "error": format!("Invalid storage path: {:?}", e) });
+            return env.new_string(err.to_string()).unwrap().into_raw();
+        }
+    };
+    let seed_cookies_json: String = match env.get_string(&seed_cookies_json) {
+        Ok(s) => s.into(),
+        Err(e) => {
+            let err = serde_json::json!({ "error": format!("Invalid seed cookies: {:?}", e) });
+            return env.new_string(err.to_string()).unwrap().into_raw();
+        }
+    };
+
+    if let Err(e) = crate::core::init_persistence(&storage_path, &seed_cookies_json) {
+        let err = serde_json::json!({ "error": e.to_string() });
+        return env.new_string(err.to_string()).unwrap().into_raw();
+    }
+
+    #[cfg(feature = "server")]
+    {
+        let result: Result<crate::server::ServerInfo, anyhow::Error> =
+            crate::core::runtime().block_on(async { server::start(port as u16).await });
+
+        match result {
+            Ok(info) => {
+                let resp = serde_json::json!({
+                    "port": info.addr.port(),
+                    "token": info.token,
+                });
+                env.new_string(resp.to_string()).unwrap().into_raw()
+            }
+            Err(e) => {
+                let err = serde_json::json!({ "error": e.to_string() });
+                env.new_string(err.to_string()).unwrap().into_raw()
+            }
+        }
+    }
+
+    #[cfg(not(feature = "server"))]
+    {
+        let err = serde_json::json!({ "error": "Server feature not enabled in this build" });
+        env.new_string(err.to_string()).unwrap().into_raw()
+    }
+}
+
+pub extern "system" fn stop_server(_env: JNIEnv, _class: JClass) {
     crate::core::init_logger();
     #[cfg(feature = "server")]
-    let _ = crate::core::runtime().block_on(async {
-        server::stop().await
-    });
+    let _ = crate::core::runtime().block_on(async { server::stop().await });
+}
+
+pub extern "system" fn kv_put_string(
+    mut env: JNIEnv,
+    _class: JClass,
+    box_name: JString,
+    key: JString,
+    value: JString,
+) -> jboolean {
+    crate::core::init_logger();
+    let box_name: String = match env.get_string(&box_name) {
+        Ok(s) => s.into(),
+        Err(e) => {
+            error!("kvPutString: invalid box name: {:?}", e);
+            return 0;
+        }
+    };
+    let key: String = match env.get_string(&key) {
+        Ok(s) => s.into(),
+        Err(e) => {
+            error!("kvPutString: invalid key: {:?}", e);
+            return 0;
+        }
+    };
+    let value: String = match env.get_string(&value) {
+        Ok(s) => s.into(),
+        Err(e) => {
+            error!("kvPutString: invalid value: {:?}", e);
+            return 0;
+        }
+    };
+
+    match crate::core::kv_put_string(&box_name, &key, &value) {
+        Ok(true) => 1,
+        Ok(false) => {
+            error!("kvPutString: persistence is not initialized");
+            0
+        }
+        Err(e) => {
+            error!("kvPutString failed: {:?}", e);
+            0
+        }
+    }
+}
+
+pub extern "system" fn kv_get_string(
+    mut env: JNIEnv,
+    _class: JClass,
+    box_name: JString,
+    key: JString,
+) -> jstring {
+    crate::core::init_logger();
+    let box_name: String = match env.get_string(&box_name) {
+        Ok(s) => s.into(),
+        Err(e) => {
+            error!("kvGetString: invalid box name: {:?}", e);
+            return std::ptr::null_mut();
+        }
+    };
+    let key: String = match env.get_string(&key) {
+        Ok(s) => s.into(),
+        Err(e) => {
+            error!("kvGetString: invalid key: {:?}", e);
+            return std::ptr::null_mut();
+        }
+    };
+
+    match crate::core::kv_get_string(&box_name, &key) {
+        Ok(Some(value)) => env.new_string(value).unwrap().into_raw(),
+        Ok(None) => std::ptr::null_mut(),
+        Err(e) => {
+            error!("kvGetString failed: {:?}", e);
+            std::ptr::null_mut()
+        }
+    }
+}
+
+pub extern "system" fn kv_remove(
+    mut env: JNIEnv,
+    _class: JClass,
+    box_name: JString,
+    key: JString,
+) -> jboolean {
+    crate::core::init_logger();
+    let box_name: String = match env.get_string(&box_name) {
+        Ok(s) => s.into(),
+        Err(e) => {
+            error!("kvRemove: invalid box name: {:?}", e);
+            return 0;
+        }
+    };
+    let key: String = match env.get_string(&key) {
+        Ok(s) => s.into(),
+        Err(e) => {
+            error!("kvRemove: invalid key: {:?}", e);
+            return 0;
+        }
+    };
+
+    match crate::core::kv_remove_key(&box_name, &key) {
+        Ok(true) => 1,
+        Ok(false) => 0,
+        Err(e) => {
+            error!("kvRemove failed: {:?}", e);
+            0
+        }
+    }
+}
+
+pub extern "system" fn kv_clear_box(
+    mut env: JNIEnv,
+    _class: JClass,
+    box_name: JString,
+) -> jboolean {
+    crate::core::init_logger();
+    let box_name: String = match env.get_string(&box_name) {
+        Ok(s) => s.into(),
+        Err(e) => {
+            error!("kvClearBox: invalid box name: {:?}", e);
+            return 0;
+        }
+    };
+
+    match crate::core::kv_clear_box(&box_name) {
+        Ok(true) => 1,
+        Ok(false) => 0,
+        Err(e) => {
+            error!("kvClearBox failed: {:?}", e);
+            0
+        }
+    }
 }

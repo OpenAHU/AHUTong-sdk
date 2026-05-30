@@ -1,10 +1,10 @@
 use crate::data::api::client::AHUClient;
+use crate::data::model::{Course, Exam, User};
 use crate::utils::des::DES;
 use crate::utils::parser::Parser;
-use crate::data::model::{User, Course, Exam};
 use anyhow::{Context, Result, anyhow};
+use log::{debug, error, info, warn};
 use serde_json::Value;
-use log::{info, debug, warn, error};
 
 const JWXT_HOME: &str = "https://jw.ahu.edu.cn/student/home";
 
@@ -20,35 +20,46 @@ impl Crawler {
     pub async fn login(&self, username: &str, password: &str) -> Result<User> {
         info!("Starting login flow for user: {}", username);
         let mut login_success_info: Option<Value> = None;
+        let mut last_auth_code_error: Option<String> = None;
         for i in 0..5 {
             info!("ADWMH login attempt {}/5", i + 1);
-            let auth_code_bytes = self.client.get_auth_code().await.context("Failed to get auth code")?;
-            if auth_code_bytes.is_empty() {
-                warn!("Auth code bytes are empty!");
-                continue;
-            }
+            let auth_code_bytes = match self.client.get_auth_code().await {
+                Ok(bytes) => bytes,
+                Err(e) => {
+                    let message = format!("{:#}", e);
+                    warn!("Failed to get auth code on attempt {}: {}", i + 1, message);
+                    last_auth_code_error = Some(message);
+                    continue;
+                }
+            };
             debug!("Auth code bytes length: {}", auth_code_bytes.len());
 
-            let captcha_res = self.client.get_captcha_result("https://118.25.8.226/ocr/captcha", auth_code_bytes.to_vec()).await;
-            
+            let captcha_res = self
+                .client
+                .get_captcha_result("https://118.25.8.226/ocr/captcha", auth_code_bytes.to_vec())
+                .await;
+
             let captcha_code = match captcha_res {
                 Ok(res) => {
                     debug!("OCR Service Response: {:?}", res);
                     res["result"].as_str().unwrap_or("").to_string()
-                },
+                }
                 Err(e) => {
                     warn!("OCR Service Request Failed: {:?}", e);
                     String::new()
                 }
             };
-            
-            if captcha_code.is_empty() { 
+
+            if captcha_code.is_empty() {
                 warn!("Captcha recognition failed (empty result), retrying...");
-                continue; 
+                continue;
             }
             debug!("Captcha recognized: {}", captcha_code);
 
-            let adwmh_login = self.client.login_with_captcha(username, password, 0, &captcha_code).await?;
+            let adwmh_login = self
+                .client
+                .login_with_captcha(username, password, 0, &captcha_code)
+                .await?;
             if adwmh_login["code"].as_i64() == Some(10000) {
                 info!("ADWMH login successful");
                 login_success_info = Some(adwmh_login);
@@ -57,10 +68,16 @@ impl Crawler {
                 warn!("ADWMH login failed: {:?}", adwmh_login);
             }
         }
-        
+
         // Master 分支逻辑：ADWMH 登录必须成功，否则整个登录失败
-        let login_info = login_success_info.ok_or_else(|| anyhow!("ADWMH login failed after 5 attempts"))?;
-        
+        let login_info = login_success_info.ok_or_else(|| {
+            if let Some(error) = last_auth_code_error {
+                anyhow!("Failed to get auth code after 5 attempts: {}", error)
+            } else {
+                anyhow!("ADWMH login failed after 5 attempts")
+            }
+        })?;
+
         let user_obj = &login_info["object"]["user"];
         let user = User {
             username: user_obj["userName"].as_str().unwrap_or("").to_string(),
@@ -69,7 +86,7 @@ impl Crawler {
 
         info!("Fetching CAS login page...");
         let (login_page_html, current_url) = self.client.fetch_login_info().await?;
-        
+
         // 检查是否已经登录 (重定向到了首页)
         let current_url_str = current_url.as_str();
         if current_url_str.ends_with("/student/home") || current_url_str == JWXT_HOME {
@@ -81,9 +98,12 @@ impl Crawler {
                     // 打印 Cookie
                     debug!("Cookies: {}", self.client.get_cookies_flat_json());
                     return Ok(user);
-                },
+                }
                 Err(e) => {
-                    warn!("Session verification failed despite being on home page: {}. Forcing re-login...", e);
+                    warn!(
+                        "Session verification failed despite being on home page: {}. Forcing re-login...",
+                        e
+                    );
                     // 如果验证失败，说明 Cookie 其实是坏的，或者被软拦截了。
                     // 这里可以选择继续往下走（尝试 CAS 登录），或者报错。
                     // 继续往下走可能会因为没有 LT 参数而失败。
@@ -101,12 +121,21 @@ impl Crawler {
                 error!("CAS param parse failed. Current URL: {}", current_url_str);
                 // 打印一部分 HTML 以供调试，但截断以防止日志过长
                 let preview_len = std::cmp::min(login_page_html.len(), 500);
-                error!("HTML content (first {} chars): {:.500}", preview_len, login_page_html);
-                return Err(anyhow!("Failed to parse CAS login params from {}", current_url_str));
+                error!(
+                    "HTML content (first {} chars): {:.500}",
+                    preview_len, login_page_html
+                );
+                return Err(anyhow!(
+                    "Failed to parse CAS login params from {}",
+                    current_url_str
+                ));
             }
         };
-        
-        info!("CAS params extracted: lt={}, execution={}, action={}", lt, execution, action);
+
+        info!(
+            "CAS params extracted: lt={}, execution={}, action={}",
+            lt, execution, action
+        );
 
         // Kotlin 使用 length() (UTF-16 char count)，Rust len() 是 byte count。
         // 为了与 Java 行为完全一致（包括 Emoji 等 surrogate pairs），必须使用 UTF-16 code units count。
@@ -116,12 +145,10 @@ impl Crawler {
         let cipher = DES::str_enc(&format!("{}{}{}", username, password, lt), "1", "2", "3");
 
         info!("Performing device login...");
-        self.client.device_login(
-            "https://one.ahu.edu.cn/cas/device",
-            ul,
-            pl,
-            &cipher
-        ).await.context("Device login failed")?;
+        self.client
+            .device_login("https://one.ahu.edu.cn/cas/device", ul, pl, &cipher)
+            .await
+            .context("Device login failed")?;
 
         let login_url = if action.starts_with("http") {
             action
@@ -130,15 +157,11 @@ impl Crawler {
         };
 
         info!("Performing JWXT CAS login to: {}", login_url);
-        let response = self.client.jwxt_login(
-            &login_url,
-            &cipher,
-            ul,
-            pl,
-            &lt,
-            &execution,
-            "submit"
-        ).await.context("CAS login request failed")?;
+        let response = self
+            .client
+            .jwxt_login(&login_url, &cipher, ul, pl, &lt, &execution, "submit")
+            .await
+            .context("CAS login request failed")?;
 
         // if (jwxtResponse.raw().request.url.toString().endsWith(Constants.JWXT_HOME))
         let final_url = response.url().as_str();
@@ -158,12 +181,21 @@ impl Crawler {
         self.client.log_current_cookies();
 
         let basic_info_html = self.client.fetch_course_table_basic_info().await?;
-        info!("[RustSDKSchedule] Fetched basic info HTML. Size: {}", basic_info_html.len());
+        info!(
+            "[RustSDKSchedule] Fetched basic info HTML. Size: {}",
+            basic_info_html.len()
+        );
 
         // Check if it's a login page
-        if basic_info_html.contains("<title>登入页面</title>") || basic_info_html.contains("id=\"loginForm\"") {
-            error!("[RustSDKSchedule] Detected login page instead of course table. Session expired or invalid.");
-            return Err(anyhow!("Session expired or invalid. Redirected to login page."));
+        if basic_info_html.contains("<title>登入页面</title>")
+            || basic_info_html.contains("id=\"loginForm\"")
+        {
+            error!(
+                "[RustSDKSchedule] Detected login page instead of course table. Session expired or invalid."
+            );
+            return Err(anyhow!(
+                "Session expired or invalid. Redirected to login page."
+            ));
         }
 
         let (semester_id, semester_name) = Parser::parse_current_semester(&basic_info_html)
@@ -171,20 +203,27 @@ impl Crawler {
                 error!("[RustSDKSchedule] Failed to parse current semester ID");
                 anyhow!("Failed to parse current semester ID")
             })?;
-        
-        info!("[RustSDKSchedule] Parsed semester: id={}, name={}", semester_id, semester_name);
 
-        let course_json = self.client.get_course(semester_id, semester_id, false).await?;
+        info!(
+            "[RustSDKSchedule] Parsed semester: id={}, name={}",
+            semester_id, semester_name
+        );
+
+        let course_json = self
+            .client
+            .get_course(semester_id, semester_id, false)
+            .await?;
         debug!("[RustSDKSchedule] Course JSON: {:?}", course_json);
 
         // 检查返回的 JSON 中是否有错误提示
         if let Some(err_msg) = course_json.get("message").and_then(|v| v.as_str()) {
-             warn!("[RustSDKSchedule] Server returned message: {}", err_msg);
+            warn!("[RustSDKSchedule] Server returned message: {}", err_msg);
         }
 
         let mut courses = Vec::new();
 
-        let activities_opt = course_json.get("studentTableVms")
+        let activities_opt = course_json
+            .get("studentTableVms")
             .and_then(|v| v.get(0))
             .and_then(|v| v.get("activities"))
             .and_then(|v| v.as_array());
@@ -194,23 +233,31 @@ impl Crawler {
         // Master 分支代码：val courseTable = JwxtApi.API.getCourse(currentSemesterJson.id, currentSemesterJson.id)
         // SDK 代码：self.client.get_course(semester_id, semester_id, false)
         // 参数一致。
-        
+
         if activities_opt.is_none() {
-             error!("[RustSDKSchedule] 'studentTableVms[0].activities' not found or not an array. JSON keys: {:?}", course_json.as_object().map(|o| o.keys().collect::<Vec<_>>()));
-             // 这里不直接报错，而是允许返回空列表，因为有些时候确实没课
-             // return Err(anyhow!("Invalid course table JSON structure"));
+            error!(
+                "[RustSDKSchedule] 'studentTableVms[0].activities' not found or not an array. JSON keys: {:?}",
+                course_json
+                    .as_object()
+                    .map(|o| o.keys().collect::<Vec<_>>())
+            );
+            // 这里不直接报错，而是允许返回空列表，因为有些时候确实没课
+            // return Err(anyhow!("Invalid course table JSON structure"));
         }
 
         if let Some(activities) = activities_opt {
             info!("[RustSDKSchedule] Found {} activities", activities.len());
 
             for (idx, act) in activities.iter().enumerate() {
-                let mut week_indexes: Vec<i32> = serde_json::from_value(act["weekIndexes"].clone())
-                    .unwrap_or_default();
+                let mut week_indexes: Vec<i32> =
+                    serde_json::from_value(act["weekIndexes"].clone()).unwrap_or_default();
                 week_indexes.sort_unstable();
 
                 if week_indexes.is_empty() {
-                    warn!("[RustSDKSchedule] Activity {} has empty weekIndexes, skipping.", idx);
+                    warn!(
+                        "[RustSDKSchedule] Activity {} has empty weekIndexes, skipping.",
+                        idx
+                    );
                     continue;
                 }
 
@@ -222,7 +269,10 @@ impl Crawler {
                 let length = end_unit - start_unit + 1;
 
                 let teacher = if let Some(arr) = act["teacherNames"].as_array() {
-                    arr.iter().map(|v| v.as_str().unwrap_or("")).collect::<Vec<_>>().join(",")
+                    arr.iter()
+                        .map(|v| v.as_str().unwrap_or(""))
+                        .collect::<Vec<_>>()
+                        .join(",")
                 } else {
                     act["teacherNames"].as_str().unwrap_or("").to_string()
                 };
@@ -262,7 +312,10 @@ impl Crawler {
             warn!("[RustSDKSchedule] No activities found in response.");
         }
 
-        info!("[RustSDKSchedule] Successfully parsed {} courses.", courses.len());
+        info!(
+            "[RustSDKSchedule] Successfully parsed {} courses.",
+            courses.len()
+        );
         Ok(courses)
     }
 
@@ -270,15 +323,16 @@ impl Crawler {
         let html = self.client.get_exam_info().await?;
         let re = regex::Regex::new(r"(?s)studentExamInfoVms\s*=\s*(\[.*?]);").unwrap();
 
-        let json_str = re.captures(&html)
+        let json_str = re
+            .captures(&html)
             .and_then(|caps| caps.get(1))
             .map(|m| m.as_str())
             .ok_or_else(|| anyhow!("Failed to extract studentExamInfoVms from HTML"))?;
 
         let fixed_json = json_str.replace("'", "\"");
 
-        let items: Vec<Value> = serde_json::from_str(&fixed_json)
-            .context("Failed to parse extracted JSON")?;
+        let items: Vec<Value> =
+            serde_json::from_str(&fixed_json).context("Failed to parse extracted JSON")?;
 
         let mut exams = Vec::new();
         for item in items {
@@ -300,7 +354,7 @@ impl Crawler {
                 time,
                 seat_num,
                 location,
-                finished
+                finished,
             });
         }
         Ok(exams)
@@ -313,7 +367,8 @@ impl Crawler {
                 // 自动获取 ID
                 let url = self.client.get_grade_sheet_entry_url().await?;
                 let parts: Vec<&str> = url.split('/').collect();
-                parts.last()
+                parts
+                    .last()
                     .map(|s| s.to_string())
                     .filter(|s| !s.is_empty())
                     .ok_or_else(|| anyhow!("Failed to extract Student ID from URL: {}", url))?
@@ -332,6 +387,7 @@ impl Crawler {
         Ok(self.client.get_balance().await?)
     }
 
+    #[cfg(not(target_arch = "wasm32"))]
     pub async fn download_calendar(&self, save_path: &str) -> anyhow::Result<()> {
         let url = "https://openahu.org/download/xiaoli.jpg";
 
@@ -345,7 +401,7 @@ impl Crawler {
             Ok(resp) => {
                 info!("Crawler: Connection established.");
                 resp
-            },
+            }
             Err(e) => {
                 error!("Crawler: Network Request FAILED. Could not connect to server.");
                 error!("Crawler: Network Error Details: {:?}", e);
@@ -368,7 +424,10 @@ impl Crawler {
             if let Ok(text) = response.text().await {
                 error!("Crawler: Server Error Body: {}", text);
             }
-            return Err(anyhow::anyhow!("HTTP Request failed with status: {}", status));
+            return Err(anyhow::anyhow!(
+                "HTTP Request failed with status: {}",
+                status
+            ));
         }
 
         // --- 第三步：下载数据 ---
@@ -380,7 +439,7 @@ impl Crawler {
             Ok(b) => {
                 info!("Crawler: Successfully downloaded {} bytes.", b.len());
                 b
-            },
+            }
             Err(e) => {
                 error!("Crawler: Failed to read body bytes from stream.");
                 error!("Crawler: Stream Error Details: {:?}", e);
@@ -393,7 +452,10 @@ impl Crawler {
         let path_obj = std::path::Path::new(save_path);
         if let Some(parent) = path_obj.parent() {
             if !parent.exists() {
-                info!("Crawler: Parent directory {:?} does not exist. Attempting to create...", parent);
+                info!(
+                    "Crawler: Parent directory {:?} does not exist. Attempting to create...",
+                    parent
+                );
                 if let Err(e) = tokio::fs::create_dir_all(parent).await {
                     error!("Crawler: Failed to create parent directory: {:?}", e);
                     // 这里不return，尝试直接写试试，或者直接报错
@@ -407,18 +469,23 @@ impl Crawler {
                 info!("Crawler: File write operation returned OK.");
                 // 二次确认文件是否存在
                 if path_obj.exists() {
-                    info!("Crawler: VERIFICATION SUCCESS: File exists at {}", save_path);
+                    info!(
+                        "Crawler: VERIFICATION SUCCESS: File exists at {}",
+                        save_path
+                    );
                 } else {
                     warn!("Crawler: VERIFICATION WARNING: Write returned OK but file not found!");
                 }
                 Ok(())
-            },
+            }
             Err(e) => {
                 error!("Crawler: File Write FAILED.");
                 error!("Crawler: IO Error Details: {:?}", e);
                 // 常见的 IO 错误分析
                 match e.kind() {
-                    std::io::ErrorKind::PermissionDenied => error!("Crawler: Reason: Permission Denied. Check Android Manifest/Storage Scopes."),
+                    std::io::ErrorKind::PermissionDenied => error!(
+                        "Crawler: Reason: Permission Denied. Check Android Manifest/Storage Scopes."
+                    ),
                     std::io::ErrorKind::NotFound => error!("Crawler: Reason: Directory Not Found."),
                     _ => error!("Crawler: Reason: Other IO Error."),
                 }

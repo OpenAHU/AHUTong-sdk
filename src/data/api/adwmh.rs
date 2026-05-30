@@ -1,19 +1,38 @@
 use crate::data::api::client::AHUClient;
-use serde_json::Value;
+use anyhow::anyhow;
 use reqwest::Result;
 use reqwest::multipart;
+use serde_json::Value;
 
 const BASE_URL: &str = "https://adwmh.ahu.edu.cn";
 
 impl AHUClient {
     // @GET("/remind/authcode")
-    pub async fn get_auth_code(&self) -> Result<bytes::Bytes> {
-        self.http
+    pub async fn get_auth_code(&self) -> anyhow::Result<bytes::Bytes> {
+        let response = self
+            .http
             .get(format!("{}/remind/authcode", BASE_URL))
+            .header("Cache-Control", "no-cache")
+            .header("Pragma", "no-cache")
             .send()
-            .await?
-            .bytes()
-            .await
+            .await?;
+
+        let status = response.status();
+        if !status.is_success() {
+            let body = response.text().await.unwrap_or_default();
+            return Err(anyhow!(
+                "authcode request failed: status={}, body={}",
+                status,
+                body.chars().take(200).collect::<String>()
+            ));
+        }
+
+        let bytes = response.bytes().await?;
+        if bytes.is_empty() {
+            return Err(anyhow!("authcode response is empty"));
+        }
+
+        Ok(bytes)
     }
 
     // @POST("/user/login")
@@ -22,7 +41,7 @@ impl AHUClient {
         username: &str,
         password: &str,
         flag: i32,
-        imgcode: &str
+        imgcode: &str,
     ) -> Result<Value> {
         let params = [
             ("username", username),
@@ -65,16 +84,20 @@ impl AHUClient {
             .file_name("img.jpg")
             .mime_str("image/jpg")?;
 
-        let form = multipart::Form::new()
-            .part("captcha", part);
+        let form = multipart::Form::new().part("captcha", part);
 
         // 使用临时的 Client，避免复用主 Client 的 Cookie 和配置
         // 强制使用 HTTP/1.1，因为 Flask 开发服务器可能不支持 HTTP/2
         // 添加 User-Agent 和 Connection: close 以提高兼容性
+        #[cfg(not(target_arch = "wasm32"))]
         let client = reqwest::Client::builder()
             .http1_only()
             .danger_accept_invalid_certs(true)
             .user_agent("AHUTong/Android")
+            .build()?;
+
+        #[cfg(target_arch = "wasm32")]
+        let client = reqwest::Client::builder()
             .build()?;
 
         client

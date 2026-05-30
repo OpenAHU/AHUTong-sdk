@@ -1,12 +1,12 @@
 use anyhow::{Context, Result};
-use base64::{engine::general_purpose::STANDARD as BASE64, Engine as _};
+use base64::{Engine as _, engine::general_purpose::STANDARD as BASE64};
 use ed25519_dalek::{Signature, Verifier, VerifyingKey};
+use log::{error, info};
+use reqwest::header::{ACCEPT, CONNECTION, HOST, USER_AGENT};
+use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::fs::File;
 use std::io::Write;
-use serde::{Deserialize, Serialize};
-use reqwest::header::{HOST, USER_AGENT, ACCEPT, CONNECTION};
-use log::{info, error};
 use std::time::{Duration, Instant};
 
 // Raw public key bytes derived from the SPKI:
@@ -27,10 +27,10 @@ pub async fn download_and_verify_update(
         save_path,
         expected_sha256_hex,
         signature_base64,
-        |_downloaded, _total| {}
-    ).await
+        |_downloaded, _total| {},
+    )
+    .await
 }
-
 
 pub async fn download_and_verify_update_with_progress<F>(
     url: &str,
@@ -43,7 +43,10 @@ where
     F: FnMut(u64, i64) + Send,
 {
     let server_ip = "118.25.8.226";
-    info!("Starting download_and_verify_update. url={}, save_path={}", url, save_path);
+    info!(
+        "Starting download_and_verify_update. url={}, save_path={}",
+        url, save_path
+    );
 
     let parsed = reqwest::Url::parse(url).context("Failed to parse download url")?;
     let original_host = parsed
@@ -51,7 +54,6 @@ where
         .ok_or_else(|| anyhow::anyhow!("Download url has no host"))?
         .to_string();
     let ip_url = url.replace(&original_host, server_ip);
-
 
     // 1. Download file
     info!("Downloading file from ip_url: {}", ip_url);
@@ -76,10 +78,7 @@ where
         .error_for_status()
         .context("HTTP status is not success")?;
 
-    let total_len: i64 = resp
-        .content_length()
-        .map(|v| v as i64)
-        .unwrap_or(-1);
+    let total_len: i64 = resp.content_length().map(|v| v as i64).unwrap_or(-1);
 
     on_progress(0, total_len);
 
@@ -96,7 +95,8 @@ where
     let mut last_emit_time = Instant::now();
 
     while let Some(chunk) = resp.chunk().await.context("Failed to read chunk")? {
-        file.write_all(&chunk).context("Failed to write chunk to file")?;
+        file.write_all(&chunk)
+            .context("Failed to write chunk to file")?;
         hasher.update(&chunk);
         downloaded += chunk.len() as u64;
 
@@ -122,7 +122,10 @@ where
     info!("Verifying SHA256...");
     let digest = hasher.finalize();
     let calculated_sha256_hex = hex::encode(&digest);
-    info!("SHA256 calculated: {}, expected: {}", calculated_sha256_hex, expected_sha256_hex);
+    info!(
+        "SHA256 calculated: {}, expected: {}",
+        calculated_sha256_hex, expected_sha256_hex
+    );
 
     if !calculated_sha256_hex.eq_ignore_ascii_case(expected_sha256_hex) {
         error!("SHA256 mismatch! Deleting invalid file.");
@@ -143,8 +146,7 @@ where
         .decode(signature_base64)
         .context("Failed to decode base64 signature")?;
 
-    let signature = Signature::from_slice(&signature_bytes)
-        .context("Invalid signature format")?;
+    let signature = Signature::from_slice(&signature_bytes).context("Invalid signature format")?;
 
     let verifying_key =
         VerifyingKey::from_bytes(&PUBLIC_KEY_BYTES).context("Invalid public key")?;
@@ -202,7 +204,10 @@ pub struct ApkUpdateInfo {
 }
 
 pub async fn check_apk_update(current_version_code: i64) -> Result<ApkUpdateInfo> {
-    info!("Checking APK update. current_version_code: {}", current_version_code);
+    info!(
+        "Checking APK update. current_version_code: {}",
+        current_version_code
+    );
     let original_url = "https://openahu.org/api/check_apk_update";
     let server_ip = "118.25.8.226";
     let original_host = reqwest::Url::parse(original_url)
@@ -259,4 +264,3 @@ pub async fn check_apk_update(current_version_code: i64) -> Result<ApkUpdateInfo
         signature: update.then_some(cfg.signature),
     })
 }
-

@@ -1,6 +1,6 @@
 use crate::data::api::client::AHUClient;
+use reqwest::{RequestBuilder, Response, Result};
 use serde_json::Value;
-use reqwest::{Result, RequestBuilder, Response};
 
 const BASE_URL: &str = "https://ycard.ahu.edu.cn";
 
@@ -19,7 +19,10 @@ impl AHUClient {
     pub async fn ycard_login_redirect(&self, target_url: Option<&str>) -> Result<Response> {
         let target = target_url.unwrap_or("https://ycard.ahu.edu.cn/plat/?name=loginTransit");
         self.http
-            .get(format!("{}/berserker-auth/cas/redirect/neusoftCas", BASE_URL))
+            .get(format!(
+                "{}/berserker-auth/cas/redirect/neusoftCas",
+                BASE_URL
+            ))
             .query(&[("targetUrl", target)])
             .send()
             .await
@@ -38,7 +41,7 @@ impl AHUClient {
                 ("name", "cardRecharge"),
                 ("appId", "27"),
                 ("synAccessSource", "h5"),
-                ("synjones-auth", &token)
+                ("synjones-auth", &token),
             ])
             .send()
             .await?
@@ -48,49 +51,36 @@ impl AHUClient {
 
     // @POST("/charge/order/thirdOrder")
     pub async fn get_order_third_data(&self, body: &Value) -> Result<String> {
-        let builder = self.http
+        let builder = self
+            .http
             .post(format!("{}/charge/order/thirdOrder", BASE_URL))
             .json(body);
 
-        self.with_auth(builder).await
-            .send()
-            .await?
-            .text()
-            .await
+        self.with_auth(builder).await.send().await?.text().await
     }
 
     // @POST("/charge/feeitem/getThirdData")
     pub async fn get_fee_item_third_data(&self, body: &Value) -> Result<String> {
-        let builder = self.http
+        let builder = self
+            .http
             .post(format!("{}/charge/feeitem/getThirdData", BASE_URL))
             .json(body);
 
-        self.with_auth(builder).await
-            .send()
-            .await?
-            .text()
-            .await
+        self.with_auth(builder).await.send().await?.text().await
     }
 
     // @POST("/blade-pay/pay")
     pub async fn pay(&self, body: &Value) -> Result<String> {
-        let builder = self.http
+        let builder = self
+            .http
             .post(format!("{}/blade-pay/pay", BASE_URL))
             .json(body);
 
-        self.with_auth(builder).await
-            .send()
-            .await?
-            .text()
-            .await
+        self.with_auth(builder).await.send().await?.text().await
     }
 
     // @POST("/berserker-auth/oauth/token")
-    pub async fn get_token(
-        &self,
-        username: &str,
-        password: &str
-    ) -> Result<Value> {
+    pub async fn get_token(&self, username: &str, password: &str) -> Result<Value> {
         let params = [
             ("username", username),
             ("password", password),
@@ -102,9 +92,11 @@ impl AHUClient {
             ("synAccessSource", "h5"),
         ];
 
-        let auth_header = "Basic bW9iaWxlX3NlcnZpY2VfcGxhdGZvcm06bW9iaWxlX3NlcnZpY2VfcGxhdGZvcm1fc2VjcmV0";
+        let auth_header =
+            "Basic bW9iaWxlX3NlcnZpY2VfcGxhdGZvcm06bW9iaWxlX3NlcnZpY2VfcGxhdGZvcm1fc2VjcmV0";
 
-        let response: Value = self.http
+        let response: Value = self
+            .http
             .post(format!("{}/berserker-auth/oauth/token", BASE_URL))
             .header("Authorization", auth_header)
             .form(&params)

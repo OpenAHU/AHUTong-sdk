@@ -13,14 +13,18 @@ impl AuthManager {
     }
 
     pub async fn refresh_token(&self) -> Result<String> {
-        let response = self.client.ycard_login_redirect(None).await
+        let response = self
+            .client
+            .ycard_login_redirect(None)
+            .await
             .context("Failed to request ycard login redirect")?;
 
         let final_url = response.url().as_str();
 
         // Regex("[?&]ticket=([^&]+)")
         let re = Regex::new(r"[?&]ticket=([^&]+)").unwrap();
-        let ticket = re.captures(final_url)
+        let ticket = re
+            .captures(final_url)
             .and_then(|c| c.get(1))
             .map(|m| m.as_str())
             .ok_or_else(|| anyhow!("Failed to extract ticket from URL: {}", final_url))?;
@@ -30,10 +34,14 @@ impl AuthManager {
         let decoded_username = decode(&decoded_once)?.into_owned();
 
         // 解码后的 username 作为 username 和 password 获取 Token
-        let token_res = self.client.get_token(&decoded_username, &decoded_username).await
+        let token_res = self
+            .client
+            .get_token(&decoded_username, &decoded_username)
+            .await
             .context("Failed to exchange ticket for token")?;
 
-        let access_token = token_res["access_token"].as_str()
+        let access_token = token_res["access_token"]
+            .as_str()
             .ok_or_else(|| anyhow!("Token response missing access_token"))?
             .to_string();
 
