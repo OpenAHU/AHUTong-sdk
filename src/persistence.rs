@@ -81,11 +81,11 @@ fn validate_name(kind: &str, value: &str) -> Result<()> {
 fn read_string_from(db: &GuiXu, box_name: &str, key: &str) -> Result<Option<String>> {
     validate_name("box name", box_name)?;
     validate_name("key", key)?;
-    let kv = db
+    let mut kv = db
         .kv_box_for(box_name)
         .with_context(|| format!("failed to open GuiXu box {box_name}"))?;
     let value = match kv.get_string(key) {
-        Ok(cookies) if !cookies.is_empty() => Some(cookies),
+        Ok(cookies) if !cookies.is_empty() => Some(cookies.to_string()),
         Ok(_) | Err(GuiXuError::KeyNotFound(_)) => None,
         Err(err) => return Err(err).context("failed to read persisted Rust cookies"),
     };
@@ -98,10 +98,10 @@ fn read_string_from(db: &GuiXu, box_name: &str, key: &str) -> Result<Option<Stri
 fn write_string_to(db: &GuiXu, box_name: &str, key: &str, value: &str) -> Result<()> {
     validate_name("box name", box_name)?;
     validate_name("key", key)?;
-    let kv = db
+    let mut kv = db
         .kv_box_for(box_name)
         .with_context(|| format!("failed to open GuiXu box {box_name}"))?;
-    kv.put_string(key, value)
+    kv.put_string(key, value.to_string())
         .with_context(|| format!("failed to write key {key} in GuiXu box {box_name}"))?;
     kv.close()
         .with_context(|| format!("failed to flush GuiXu box {box_name}"))?;
@@ -112,7 +112,7 @@ fn write_string_to(db: &GuiXu, box_name: &str, key: &str, value: &str) -> Result
 fn remove_from(db: &GuiXu, box_name: &str, key: &str) -> Result<()> {
     validate_name("box name", box_name)?;
     validate_name("key", key)?;
-    let kv = db
+    let mut kv = db
         .kv_box_for(box_name)
         .with_context(|| format!("failed to open GuiXu box {box_name}"))?;
     kv.remove(key)
@@ -125,7 +125,7 @@ fn remove_from(db: &GuiXu, box_name: &str, key: &str) -> Result<()> {
 #[cfg(not(target_arch = "wasm32"))]
 fn clear_box_in(db: &GuiXu, box_name: &str) -> Result<()> {
     validate_name("box name", box_name)?;
-    let kv = db
+    let mut kv = db
         .kv_box_for(box_name)
         .with_context(|| format!("failed to open GuiXu box {box_name}"))?;
     kv.clear(true)

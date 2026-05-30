@@ -30,7 +30,7 @@ guixu = { path = "../GuiXu-Rust" }
 log = "0.4"
 
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
-reqwest = { version = "0.12.28", default-features = false, features = ["rustls-tls", "cookies", "json", "multipart"] }
+reqwest = { version = "0.12.28", default-features = false, features = ["rustls-tls", "cookies", "json", "multipart", "gzip"] }
 tokio = { version = "1", features = ["full"] }
 reqwest_cookie_store = "0.9.0"
 cookie_store = "0.22.0"
