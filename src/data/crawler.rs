@@ -321,13 +321,21 @@ impl Crawler {
 
     pub async fn get_exam_info(&self) -> Result<Vec<Exam>> {
         let html = self.client.get_exam_info().await?;
-        let re = regex::Regex::new(r"(?s)studentExamInfoVms\s*=\s*(\[.*?]);").unwrap();
+
+        // Try new HTML table format first (post-redesign: server-rendered <tr> elements)
+        let exams = Parser::parse_exam_from_html(&html);
+        if !exams.is_empty() {
+            return Ok(exams);
+        }
+
+        // Fallback: old format with studentExamInfoVms JS variable
+        let re = regex::Regex::new(r"(?s)studentExamInfoVms\s*=\s*(\[.*?\]);").unwrap();
 
         let json_str = re
             .captures(&html)
             .and_then(|caps| caps.get(1))
             .map(|m| m.as_str())
-            .ok_or_else(|| anyhow!("Failed to extract studentExamInfoVms from HTML"))?;
+            .ok_or_else(|| anyhow!("Failed to extract exam info from HTML (neither table nor studentExamInfoVms found)"))?;
 
         let fixed_json = json_str.replace("'", "\"");
 
