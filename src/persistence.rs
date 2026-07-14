@@ -16,6 +16,7 @@ const COOKIES_KEY: &str = "cookies_json";
 struct Persistence {
     db: GuiXu,
     path: PathBuf,
+    persist_session: bool,
 }
 
 #[cfg(not(target_arch = "wasm32"))]
@@ -26,7 +27,11 @@ fn persistence_cell() -> &'static Mutex<Option<Persistence>> {
     PERSISTENCE.get_or_init(|| Mutex::new(None))
 }
 
-pub fn init(storage_path: &str, seed_cookies_json: &str) -> Result<Option<String>> {
+pub fn init(
+    storage_path: &str,
+    seed_cookies_json: &str,
+    persist_session: bool,
+) -> Result<Option<String>> {
     #[cfg(target_arch = "wasm32")]
     {
         Ok(None)
@@ -41,21 +46,32 @@ pub fn init(storage_path: &str, seed_cookies_json: &str) -> Result<Option<String
         let path = PathBuf::from(storage_path);
         let db = GuiXu::new(path.clone())
             .with_context(|| format!("failed to open Rust persistence at {}", path.display()))?;
-        let stored_cookies = read_string_from(&db, SESSION_BOX, COOKIES_KEY)
-            .context("failed to read persisted Rust cookies")?;
-
-        let cookies_to_restore = if stored_cookies.is_none() && !seed_cookies_json.trim().is_empty() {
-            write_string_to(&db, SESSION_BOX, COOKIES_KEY, seed_cookies_json)
-                .context("failed to migrate seeded Rust cookies")?;
-            Some(seed_cookies_json.to_string())
+        let cookies_to_restore = if persist_session {
+            let stored_cookies = read_string_from(&db, SESSION_BOX, COOKIES_KEY)
+                .context("failed to read persisted Rust cookies")?;
+            if stored_cookies.is_none() && !seed_cookies_json.trim().is_empty() {
+                write_string_to(&db, SESSION_BOX, COOKIES_KEY, seed_cookies_json)
+                    .context("failed to migrate seeded Rust cookies")?;
+                Some(seed_cookies_json.to_string())
+            } else {
+                stored_cookies
+            }
+        } else if seed_cookies_json.trim().is_empty() {
+            None
         } else {
-            stored_cookies
+            // Apple clients keep Cookie/Token material in Keychain. The seed is
+            // loaded into the in-memory crawler, but never written to GuiXu.
+            Some(seed_cookies_json.to_string())
         };
 
         let mut guard = persistence_cell()
             .lock()
             .expect("persistence mutex poisoned");
-        *guard = Some(Persistence { db, path });
+        *guard = Some(Persistence {
+            db,
+            path,
+            persist_session,
+        });
 
         Ok(cookies_to_restore)
     }
@@ -149,6 +165,9 @@ pub fn save_cookies(cookies_json: &str) -> Result<bool> {
         let Some(persistence) = guard.as_ref() else {
             return Ok(false);
         };
+        if !persistence.persist_session {
+            return Ok(false);
+        }
 
         if cookies_json.is_empty() {
             remove_from(&persistence.db, SESSION_BOX, COOKIES_KEY).with_context(|| {
@@ -247,5 +266,76 @@ pub fn clear_box(box_name: &str) -> Result<bool> {
         };
         clear_box_in(&persistence.db, box_name)?;
         Ok(true)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::fs::{create_dir_all, remove_dir_all};
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    #[test]
+    fn guixu_persistence_reopens_migrates_and_isolates_keychain_sessions() {
+        let root = std::env::temp_dir().join(format!(
+            "ahutong-sdk-persistence-{}-{}",
+            std::process::id(),
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .expect("system clock")
+                .as_nanos()
+        ));
+        create_dir_all(&root).expect("temporary persistence root");
+        let database = root.join("primary");
+
+        let restored = init(
+            database.to_str().expect("utf-8 path"),
+            r#"[{"name":"session","value":"seed"}]"#,
+            true,
+        )
+        .expect("initialize persisted session");
+        assert!(restored.is_some());
+        assert!(put_string("user_cache", "schedule", "cached").expect("write cache"));
+        assert_eq!(
+            get_string("user_cache", "schedule").expect("read cache"),
+            Some("cached".to_string())
+        );
+
+        let reopened = init(database.to_str().expect("utf-8 path"), "", true)
+            .expect("reopen persisted session");
+        assert_eq!(reopened, restored);
+        assert_eq!(
+            get_string("user_cache", "schedule").expect("read reopened cache"),
+            Some("cached".to_string())
+        );
+
+        assert!(remove_key("user_cache", "schedule").expect("remove cache"));
+        assert_eq!(
+            get_string("user_cache", "schedule").expect("read removed cache"),
+            None
+        );
+        assert!(put_string("user_cache", "grade", "cached-grade").expect("write grade"));
+        assert!(clear_box("user_cache").expect("clear cache box"));
+        assert_eq!(
+            get_string("user_cache", "grade").expect("read cleared cache"),
+            None
+        );
+
+        let keychain_only = root.join("keychain-only");
+        let seed = r#"[{"name":"session","value":"keychain"}]"#;
+        assert_eq!(
+            init(keychain_only.to_str().expect("utf-8 path"), seed, false)
+                .expect("initialize keychain-only session"),
+            Some(seed.to_string())
+        );
+        assert!(!save_cookies("must-not-be-written").expect("skip cookie persistence"));
+        assert_eq!(
+            init(keychain_only.to_str().expect("utf-8 path"), "", false)
+                .expect("reopen keychain-only session"),
+            None
+        );
+        assert!(put_string("../escape", "key", "value").is_err());
+        assert!(put_string("cache", "nested/key", "value").is_err());
+        let _ = remove_dir_all(root);
     }
 }

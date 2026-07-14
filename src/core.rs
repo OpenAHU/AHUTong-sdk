@@ -83,21 +83,27 @@ pub fn cookies_flat_json() -> String {
     crawler().client.get_cookies_flat_json()
 }
 
-pub fn init_persistence(storage_path: &str, seed_cookies_json: &str) -> anyhow::Result<()> {
-    if let Some(cookies) = persistence::init(storage_path, seed_cookies_json)? {
+pub fn init_persistence(
+    storage_path: &str,
+    seed_cookies_json: &str,
+    persist_session: bool,
+) -> anyhow::Result<()> {
+    let cookies = persistence::init(storage_path, seed_cookies_json, persist_session)?;
+    crawler().client.clear_cookies();
+    if let Some(cookies) = cookies {
         crawler().client.load_cookies_json(&cookies);
         log::info!("Restored Rust cookies from persistence.");
     }
     Ok(())
 }
 
-pub fn persist_current_cookies() {
+pub fn persist_current_cookies() -> anyhow::Result<bool> {
     let cookies = dump_cookies_json();
-    match persistence::save_cookies(&cookies) {
-        Ok(true) => log::info!("Persisted Rust cookies."),
-        Ok(false) => {}
-        Err(e) => log::warn!("Failed to persist Rust cookies: {:?}", e),
+    let persisted = persistence::save_cookies(&cookies)?;
+    if persisted {
+        log::info!("Persisted Rust cookies.");
     }
+    Ok(persisted)
 }
 
 pub fn kv_put_string(box_name: &str, key: &str, value: &str) -> anyhow::Result<bool> {

@@ -2,6 +2,19 @@
 
 AHUTong 的 Rust 核心实现，提供 Android JNI 接口以及用于桌面端调试/独立运行的 HTTP 服务器。
 
+## Apple / iOS 持久化接口
+
+iOS 以 `staticlib` 链接本 crate，并通过 `src/ffi.rs` 暴露的 C ABI 使用本地服务器与 GuiXu：
+
+- `ahutong_init_persistence`：打开或切换 GuiXu 数据库；第三个参数控制是否允许把 Rust Cookie 写入数据库。
+- `ahutong_kv_put_string` / `ahutong_kv_get_string`：字符串 KV 读写。
+- `ahutong_kv_remove` / `ahutong_kv_clear_box`：删除键或清空命名 box。
+- `ahutong_persist_current_cookies`：仅在初始化时允许会话落盘的客户端生效。
+
+所有返回字符串都是 `{ "ok": true, "value": ... }` 或 `{ "ok": false, "error": ... }` JSON，调用方必须使用 `ahutong_free_string` 释放。切换数据库时会先清空 crawler 内存 Cookie，再按 seed / 已保存会话恢复，避免账号串用。
+
+iOS 客户端必须以 `persist_session = 0` 初始化：GuiXu 只保存非敏感业务缓存，Cookie、Token 和密码继续由 Keychain 管理。Android 的现有 JNI 路径使用 `persist_session = 1`，保持当前兼容行为。
+
 ## 开发与测试
 
 ### 1. 预备环境

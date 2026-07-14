@@ -74,7 +74,7 @@ pub async fn login(
 ) -> Result<impl IntoResponse, AppError> {
     check_token(&headers, &state)?;
     let user = core::crawler().login(&req.username, &req.password).await?;
-    core::persist_current_cookies();
+    core::persist_current_cookies()?;
     Ok((StatusCode::OK, Json(user)))
 }
 
@@ -148,6 +148,7 @@ pub async fn refresh_token(
 ) -> Result<impl IntoResponse, AppError> {
     check_token(&headers, &state)?;
     let token = core::auth_manager().refresh_token().await?;
+    core::persist_current_cookies()?;
     Ok((
         StatusCode::OK,
         Json(serde_json::json!({ "access_token": token })),

@@ -1,4 +1,5 @@
-use std::ffi::{CString, c_char};
+use serde::Serialize;
+use std::ffi::{CStr, CString, c_char};
 
 fn response_string(
     ok: bool,
@@ -52,6 +53,122 @@ fn fallback_error_ptr() -> *mut c_char {
         )
         .into_raw()
     }
+}
+
+fn ffi_result<T: Serialize>(result: anyhow::Result<T>) -> *mut c_char {
+    let response = match result {
+        Ok(value) => serde_json::json!({
+            "ok": true,
+            "value": value,
+        }),
+        Err(error) => serde_json::json!({
+            "ok": false,
+            "error": error.to_string(),
+        }),
+    };
+    string_into_raw_ptr(response.to_string())
+}
+
+fn required_string(pointer: *const c_char, name: &str) -> anyhow::Result<String> {
+    if pointer.is_null() {
+        anyhow::bail!("{name} pointer is null");
+    }
+    // SAFETY: FFI callers must pass a valid NUL-terminated string for the
+    // duration of this call. The value is copied before the function returns.
+    let value = unsafe { CStr::from_ptr(pointer) };
+    Ok(value
+        .to_str()
+        .map_err(|error| anyhow::anyhow!("{name} is not UTF-8: {error}"))?
+        .to_string())
+}
+
+fn ffi_call<T: Serialize>(operation: impl FnOnce() -> anyhow::Result<T>) -> *mut c_char {
+    match std::panic::catch_unwind(std::panic::AssertUnwindSafe(operation)) {
+        Ok(result) => ffi_result(result),
+        Err(_) => ffi_result::<serde_json::Value>(Err(anyhow::anyhow!(
+            "panic while executing persistence operation"
+        ))),
+    }
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn ahutong_init_persistence(
+    storage_path: *const c_char,
+    seed_cookies_json: *const c_char,
+    persist_session: u8,
+) -> *mut c_char {
+    crate::core::init_logger();
+    ffi_call(|| {
+        let storage_path = required_string(storage_path, "storage_path")?;
+        let seed_cookies_json = required_string(seed_cookies_json, "seed_cookies_json")?;
+        crate::core::init_persistence(&storage_path, &seed_cookies_json, persist_session != 0)?;
+        Ok(true)
+    })
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn ahutong_persist_current_cookies() -> *mut c_char {
+    crate::core::init_logger();
+    ffi_call(crate::core::persist_current_cookies)
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn ahutong_kv_put_string(
+    box_name: *const c_char,
+    key: *const c_char,
+    value: *const c_char,
+) -> *mut c_char {
+    crate::core::init_logger();
+    ffi_call(|| {
+        let box_name = required_string(box_name, "box_name")?;
+        let key = required_string(key, "key")?;
+        let value = required_string(value, "value")?;
+        let initialized = crate::core::kv_put_string(&box_name, &key, &value)?;
+        if !initialized {
+            anyhow::bail!("persistence is not initialized");
+        }
+        Ok(true)
+    })
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn ahutong_kv_get_string(
+    box_name: *const c_char,
+    key: *const c_char,
+) -> *mut c_char {
+    crate::core::init_logger();
+    ffi_call(|| {
+        let box_name = required_string(box_name, "box_name")?;
+        let key = required_string(key, "key")?;
+        crate::core::kv_get_string(&box_name, &key)
+    })
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn ahutong_kv_remove(box_name: *const c_char, key: *const c_char) -> *mut c_char {
+    crate::core::init_logger();
+    ffi_call(|| {
+        let box_name = required_string(box_name, "box_name")?;
+        let key = required_string(key, "key")?;
+        let initialized = crate::core::kv_remove_key(&box_name, &key)?;
+        if !initialized {
+            anyhow::bail!("persistence is not initialized");
+        }
+        Ok(true)
+    })
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn ahutong_kv_clear_box(box_name: *const c_char) -> *mut c_char {
+    crate::core::init_logger();
+    ffi_call(|| {
+        let box_name = required_string(box_name, "box_name")?;
+        let initialized = crate::core::kv_clear_box(&box_name)?;
+        if !initialized {
+            anyhow::bail!("persistence is not initialized");
+        }
+        Ok(true)
+    })
 }
 
 #[unsafe(no_mangle)]

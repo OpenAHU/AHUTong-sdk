@@ -198,7 +198,7 @@ pub extern "system" fn login(
     match result {
         Ok(user) => {
             info!("Login successful for user: {}", user.username);
-            crate::core::persist_current_cookies();
+            let _ = crate::core::persist_current_cookies();
             let json = serde_json::to_string(&user).unwrap();
             env.new_string(json).unwrap().into_raw()
         }
@@ -710,7 +710,7 @@ pub extern "system" fn start_server_with_storage(
         }
     };
 
-    if let Err(e) = crate::core::init_persistence(&storage_path, &seed_cookies_json) {
+    if let Err(e) = crate::core::init_persistence(&storage_path, &seed_cookies_json, true) {
         let err = serde_json::json!({ "error": e.to_string() });
         return env.new_string(err.to_string()).unwrap().into_raw();
     }
