@@ -81,6 +81,17 @@ impl AHUClient {
         Ok(resp.url().to_string())
     }
 
+    pub async fn get_grade_sheet_entry_page(&self) -> Result<(String, String)> {
+        let resp = self
+            .http
+            .get(format!("{}/student/for-std/grade/sheet", BASE_URL))
+            .send()
+            .await?;
+        let url = resp.url().to_string();
+        let html = resp.text().await?;
+        Ok((url, html))
+    }
+
     // @GET("/student/for-std/grade/sheet")
     // To retrieve a student's examInfo/grade, you need their ID
     // This interface return's student' grade, and it also returns student's ID via its redirect URL
@@ -104,6 +115,18 @@ impl AHUClient {
             .send()
             .await?
             .json::<Value>()
+            .await
+    }
+
+    pub async fn get_gpa_rank_page(&self, id: &str) -> Result<String> {
+        self.http
+            .get(format!(
+                "{}/student/for-std/grade/sheet/semester-index/{}",
+                BASE_URL, id
+            ))
+            .send()
+            .await?
+            .text()
             .await
     }
 

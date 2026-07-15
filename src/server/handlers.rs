@@ -100,6 +100,15 @@ pub async fn current_week(
     Ok((StatusCode::OK, Json(v)))
 }
 
+pub async fn next_schedule(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+) -> Result<impl IntoResponse, AppError> {
+    check_token(&headers, &state)?;
+    let courses = core::crawler().get_next_schedule().await?;
+    Ok((StatusCode::OK, Json(courses)))
+}
+
 pub async fn exam(
     State(state): State<AppState>,
     headers: HeaderMap,
@@ -122,6 +131,28 @@ pub async fn grade(
     check_token(&headers, &state)?;
     let v = core::crawler().get_grade(q.student_id).await?;
     Ok((StatusCode::OK, Json(v)))
+}
+
+pub async fn grade_profiles(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+) -> Result<impl IntoResponse, AppError> {
+    check_token(&headers, &state)?;
+    let profiles = core::crawler().get_grade_profiles().await?;
+    Ok((StatusCode::OK, Json(profiles)))
+}
+
+pub async fn grade_rank(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Query(q): Query<GradeQuery>,
+) -> Result<impl IntoResponse, AppError> {
+    check_token(&headers, &state)?;
+    let student_id = q
+        .student_id
+        .ok_or_else(|| anyhow::anyhow!("student_id is required"))?;
+    let rank = core::crawler().get_gpa_rank(&student_id).await?;
+    Ok((StatusCode::OK, Json(rank)))
 }
 
 pub async fn balance(

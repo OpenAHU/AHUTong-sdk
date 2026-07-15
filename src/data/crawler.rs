@@ -2,14 +2,24 @@ use crate::data::api::client::AHUClient;
 use crate::data::model::{Course, Exam, User};
 use crate::utils::des::DES;
 use crate::utils::parser::Parser;
-use anyhow::{Context, Result, anyhow};
+use anyhow::{anyhow, Context, Result};
 use log::{debug, error, info, warn};
+use serde::Serialize;
 use serde_json::Value;
 
 const JWXT_HOME: &str = "https://jw.ahu.edu.cn/student/home";
 
 pub struct Crawler {
     pub client: AHUClient,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct GradeStudentProfile {
+    pub id: String,
+    pub training_type: String,
+    pub department: String,
+    pub major: String,
 }
 
 impl Crawler {
@@ -177,6 +187,14 @@ impl Crawler {
     }
 
     pub async fn get_schedule(&self) -> Result<Vec<Course>> {
+        self.get_schedule_with_semester_offset(0).await
+    }
+
+    pub async fn get_next_schedule(&self) -> Result<Vec<Course>> {
+        self.get_schedule_with_semester_offset(20).await
+    }
+
+    async fn get_schedule_with_semester_offset(&self, semester_offset: i32) -> Result<Vec<Course>> {
         info!("[RustSDKSchedule] Starting get_schedule...");
         self.client.log_current_cookies();
 
@@ -209,9 +227,10 @@ impl Crawler {
             semester_id, semester_name
         );
 
+        let target_semester_id = semester_id + semester_offset;
         let course_json = self
             .client
-            .get_course(semester_id, semester_id, false)
+            .get_course(target_semester_id, semester_id, false)
             .await?;
         debug!("[RustSDKSchedule] Course JSON: {:?}", course_json);
 
@@ -387,6 +406,24 @@ impl Crawler {
         Ok(grade_json)
     }
 
+    pub async fn get_grade_profiles(&self) -> Result<Vec<GradeStudentProfile>> {
+        let (url, html) = self.client.get_grade_sheet_entry_page().await?;
+        if let Some(id) = numeric_last_path_component(&url) {
+            return Ok(vec![GradeStudentProfile {
+                id,
+                training_type: "主修".to_string(),
+                department: String::new(),
+                major: String::new(),
+            }]);
+        }
+        Ok(parse_grade_profiles(&html))
+    }
+
+    pub async fn get_gpa_rank(&self, student_id: &str) -> Result<Value> {
+        let html = self.client.get_gpa_rank_page(student_id).await?;
+        parse_gpa_rank_model(&html)
+    }
+
     pub async fn get_qrcode(&self) -> Result<Value> {
         Ok(self.client.get_qrcode().await?)
     }
@@ -500,5 +537,96 @@ impl Crawler {
                 Err(e.into())
             }
         }
+    }
+}
+
+fn numeric_last_path_component(url: &str) -> Option<String> {
+    let component = url.trim_end_matches('/').rsplit('/').next()?;
+    (!component.is_empty() && component.chars().all(|value| value.is_ascii_digit()))
+        .then(|| component.to_string())
+}
+
+fn parse_grade_profiles(html: &str) -> Vec<GradeStudentProfile> {
+    let panel =
+        regex::Regex::new(r#"(?is)class\s*=\s*[\"'][^\"']*student-panel-block[^\"']*[\"']"#)
+            .expect("grade profile panel regex");
+    let value = regex::Regex::new(r#"(?is)<button[^>]*onclick\s*=\s*[\"'][^\"']*myFunction[^\"']*[\"'][^>]*value\s*=\s*[\"']([^\"']+)[\"']|<button[^>]*value\s*=\s*[\"']([^\"']+)[\"'][^>]*onclick\s*=\s*[\"'][^\"']*myFunction"#)
+        .expect("grade profile id regex");
+    let dd = regex::Regex::new(r"(?is)<dd[^>]*>(.*?)</dd>").expect("grade profile field regex");
+    let tag = regex::Regex::new(r"(?is)<[^>]+>").expect("html tag regex");
+    let mut starts: Vec<usize> = panel.find_iter(html).map(|item| item.start()).collect();
+    starts.push(html.len());
+
+    starts
+        .windows(2)
+        .filter_map(|bounds| {
+            let block = &html[bounds[0]..bounds[1]];
+            let captures = value.captures(block)?;
+            let id = captures
+                .get(1)
+                .or_else(|| captures.get(2))?
+                .as_str()
+                .trim()
+                .to_string();
+            let fields: Vec<String> = dd
+                .captures_iter(block)
+                .take(3)
+                .map(|capture| {
+                    tag.replace_all(capture.get(1).map_or("", |item| item.as_str()), "")
+                        .trim()
+                        .to_string()
+                })
+                .collect();
+            Some(GradeStudentProfile {
+                id,
+                training_type: fields.first().cloned().unwrap_or_default(),
+                department: fields.get(1).cloned().unwrap_or_default(),
+                major: fields.get(2).cloned().unwrap_or_default(),
+            })
+        })
+        .collect()
+}
+
+fn parse_gpa_rank_model(html: &str) -> Result<Value> {
+    let pattern = regex::Regex::new(r"(?s)var\s+gpaSemesterModel\s*=\s*(\{.*?\});")?;
+    let object = pattern
+        .captures(html)
+        .and_then(|captures| captures.get(1))
+        .ok_or_else(|| anyhow!("gpaSemesterModel was not found"))?
+        .as_str()
+        .replace('\'', "\"");
+    serde_json::from_str(&object).context("Failed to parse gpaSemesterModel")
+}
+
+#[cfg(test)]
+mod grade_tests {
+    use super::{numeric_last_path_component, parse_gpa_rank_model, parse_grade_profiles};
+
+    #[test]
+    fn parses_multiple_grade_profiles() {
+        let html = r#"
+        <div class="student-panel-block"><dd>主修</dd><dd>计算机学院</dd><dd>软件工程</dd>
+        <button onclick="myFunction(this)" value="122850">成绩</button></div>
+        <div class="student-panel-block"><dd>微专业</dd><dd>创新学院</dd><dd>人工智能</dd>
+        <button value="122851" onclick="myFunction(this)">成绩</button></div>"#;
+        let profiles = parse_grade_profiles(html);
+        assert_eq!(profiles.len(), 2);
+        assert_eq!(profiles[1].id, "122851");
+        assert_eq!(profiles[1].major, "人工智能");
+    }
+
+    #[test]
+    fn parses_redirect_and_rank_model() {
+        assert_eq!(
+            numeric_last_path_component(
+                "https://jw.ahu.edu.cn/student/for-std/grade/sheet/info/122850"
+            ),
+            Some("122850".into())
+        );
+        let rank = parse_gpa_rank_model(
+            "<script>var gpaSemesterModel = {'gpa':3.8,'majorRank':5};</script>",
+        )
+        .unwrap();
+        assert_eq!(rank["majorRank"], 5);
     }
 }

@@ -1,6 +1,6 @@
 use axum::{
-    Router,
     routing::{get, post},
+    Router,
 };
 
 use super::handlers::{self, AppState};
@@ -13,9 +13,12 @@ pub fn router(state: AppState) -> Router {
         .route("/cookies/flat", get(handlers::cookies_flat))
         .route("/login", post(handlers::login))
         .route("/schedule", get(handlers::schedule))
+        .route("/schedule/next", get(handlers::next_schedule))
         .route("/schedule/current-week", get(handlers::current_week))
         .route("/exam", get(handlers::exam))
         .route("/grade", get(handlers::grade))
+        .route("/grade/profiles", get(handlers::grade_profiles))
+        .route("/grade/rank", get(handlers::grade_rank))
         .route("/ycard/balance", get(handlers::balance))
         .route("/ycard/qrcode", get(handlers::qrcode))
         .route("/ycard/refresh_token", post(handlers::refresh_token))
