@@ -10,7 +10,88 @@ struct CurrentSemester {
     name: String,
 }
 
+#[cfg(test)]
+mod exam_tests {
+    use super::Parser;
+
+    #[test]
+    fn parses_multiline_exam_table_with_reordered_and_single_quoted_attributes() {
+        let html = r#"
+            <script>
+                const studentExamList = [
+                    {"id":"A-17","seatNo":18},
+                    {"id":22,"seatNo":"07"}
+                ];
+            </script>
+            <table>
+                <tr class='exam-row active' aria-label='exam' data-finished='false'>
+                    <td>
+                        <span>磬苑校区</span>
+                        <span>博学南楼</span>
+                        <span>A210</span>
+                        <span id='seat-A-17'>座位</span>
+                    </td>
+                    <td>
+                        <div data-kind='exam' class='compact time'>
+                            2026-07-20 09:00~11:00
+                        </div>
+                        <span style='color: #000; font-weight: bold'>操作&amp;系统</span>
+                        <span class='type2 tag-span rounded'>期末</span>
+                    </td>
+                </tr>
+                <tr data-finished=1 class="exam-row">
+                    <td><span>龙河校区</span><span id="seat-22">座位</span></td>
+                    <td>
+                        <div class="time">2026-07-21 14:00~16:00</div>
+                        <span style="font-weight: bold">计算机网络</span>
+                    </td>
+                </tr>
+            </table>
+        "#;
+
+        let exams = Parser::parse_exam_from_html(html);
+
+        assert_eq!(exams.len(), 2);
+        assert_eq!(exams[0].course, "操作&系统(期末)");
+        assert_eq!(exams[0].time, "2026-07-20 09:00~11:00");
+        assert_eq!(exams[0].seat_num, "18");
+        assert_eq!(exams[0].location, "磬苑校区-博学南楼-A210");
+        assert!(!exams[0].finished);
+        assert_eq!(exams[1].seat_num, "07");
+        assert!(exams[1].finished);
+    }
+
+    #[test]
+    fn ignores_unrelated_rows_without_exam_marker() {
+        let html = r#"<table><tr><td><span>普通表格</span></td></tr></table>"#;
+        assert!(Parser::parse_exam_from_html(html).is_empty());
+    }
+}
+
 pub struct Parser;
+
+fn json_scalar_string(value: &serde_json::Value) -> String {
+    match value {
+        serde_json::Value::String(value) => value.clone(),
+        serde_json::Value::Number(value) => value.to_string(),
+        serde_json::Value::Bool(value) => value.to_string(),
+        _ => String::new(),
+    }
+}
+
+fn normalized_html_text(value: &str) -> String {
+    static RE_TAG: OnceLock<Regex> = OnceLock::new();
+    let regex = RE_TAG.get_or_init(|| Regex::new(r"(?is)<[^>]+>").unwrap());
+    let text = regex
+        .replace_all(value, " ")
+        .replace("&nbsp;", " ")
+        .replace("&amp;", "&")
+        .replace("&lt;", "<")
+        .replace("&gt;", ">")
+        .replace("&quot;", "\"")
+        .replace("&#39;", "'");
+    text.split_whitespace().collect::<Vec<_>>().join(" ")
+}
 
 impl Parser {
     pub fn parse_current_semester(html: &str) -> Option<(i32, String)> {
@@ -351,8 +432,9 @@ impl Parser {
         // 1. Parse studentExamList JS variable for seat number mapping (exam id -> seat number)
         let seat_map: HashMap<String, String> = {
             static RE_SEAT_LIST: OnceLock<Regex> = OnceLock::new();
-            let re =
-                RE_SEAT_LIST.get_or_init(|| Regex::new(r"(?s)var\s+studentExamList\s*=\s*(\[.+?\]);").unwrap());
+            let re = RE_SEAT_LIST.get_or_init(|| {
+                Regex::new(r"(?is)(?:var|let|const)\s+studentExamList\s*=\s*(\[.+?\])\s*;").unwrap()
+            });
 
             let mut map = HashMap::new();
             if let Some(caps) = re.captures(html) {
@@ -360,9 +442,11 @@ impl Parser {
                 let fixed = json_str.replace('\'', "\"");
                 if let Ok(items) = serde_json::from_str::<Vec<serde_json::Value>>(&fixed) {
                     for item in items {
-                        let id = item["id"].to_string();
-                        let seat = item["seatNo"].to_string();
-                        map.insert(id, seat);
+                        let id = json_scalar_string(&item["id"]);
+                        let seat = json_scalar_string(&item["seatNo"]);
+                        if !id.is_empty() {
+                            map.insert(id, seat);
+                        }
                     }
                 }
             }
@@ -372,50 +456,65 @@ impl Parser {
         // 2. Parse exam table <tr> rows
         static RE_TR: OnceLock<Regex> = OnceLock::new();
         let re_tr = RE_TR.get_or_init(|| {
-            Regex::new(r#"<tr\s+data-finished="([^"]*)"[^>]*?>(.*?)</tr>"#).unwrap()
+            Regex::new(
+                r#"(?is)<tr\b[^>]*\bdata-finished\s*=\s*["']?(true|false|1|0)["']?[^>]*>(.*?)</tr\s*>"#,
+            )
+            .unwrap()
         });
 
         for caps in re_tr.captures_iter(html) {
-            let finished = caps.get(1).unwrap().as_str() == "true";
+            let finished = matches!(
+                caps.get(1).unwrap().as_str().to_ascii_lowercase().as_str(),
+                "true" | "1"
+            );
             let tr_content = caps.get(2).unwrap().as_str();
 
             // Extract time from <div class="time ...">
             static RE_TIME: OnceLock<Regex> = OnceLock::new();
             let re_time = RE_TIME.get_or_init(|| {
-                Regex::new(r#"<div\s+class="time[^"]*"[^>]*?>(.*?)</div>"#).unwrap()
+                Regex::new(
+                    r#"(?is)<div\b[^>]*\bclass\s*=\s*["'][^"']*\btime\b[^"']*["'][^>]*>(.*?)</div\s*>"#,
+                )
+                .unwrap()
             });
             let time = re_time
                 .captures(tr_content)
                 .and_then(|c| c.get(1))
-                .map(|m| m.as_str().trim().to_string())
+                .map(|m| normalized_html_text(m.as_str()))
                 .unwrap_or_default();
 
             // Extract course name from bold <span>
             static RE_COURSE: OnceLock<Regex> = OnceLock::new();
             let re_course = RE_COURSE.get_or_init(|| {
-                Regex::new(r#"<span[^>]*?font-weight:\s*bold[^>]*?>(.*?)</span>"#).unwrap()
+                Regex::new(
+                    r#"(?is)<span\b[^>]*\bstyle\s*=\s*["'][^"']*font-weight\s*:\s*bold[^"']*["'][^>]*>(.*?)</span\s*>"#,
+                )
+                .unwrap()
             });
             let course = re_course
                 .captures(tr_content)
                 .and_then(|c| c.get(1))
-                .map(|m| m.as_str().trim().to_string())
+                .map(|m| normalized_html_text(m.as_str()))
                 .unwrap_or_default();
 
             // Extract exam type from <span class="tag-span typeX">
             static RE_TYPE: OnceLock<Regex> = OnceLock::new();
             let re_type = RE_TYPE.get_or_init(|| {
-                Regex::new(r#"<span\s+class="tag-span\s+type\d+"[^>]*?>(.*?)</span>"#).unwrap()
+                Regex::new(
+                    r#"(?is)<span\b[^>]*\bclass\s*=\s*["'][^"']*\btag-span\b[^"']*["'][^>]*>(.*?)</span\s*>"#,
+                )
+                .unwrap()
             });
             let exam_type = re_type
                 .captures(tr_content)
                 .and_then(|c| c.get(1))
-                .map(|m| m.as_str().trim().to_string())
+                .map(|m| normalized_html_text(m.as_str()))
                 .unwrap_or_default();
 
             // Extract seat exam ID from <span id="seat-NNN">
             static RE_SEAT_ID: OnceLock<Regex> = OnceLock::new();
-            let re_seat_id =
-                RE_SEAT_ID.get_or_init(|| Regex::new(r#"id="seat-(\d+)""#).unwrap());
+            let re_seat_id = RE_SEAT_ID
+                .get_or_init(|| Regex::new(r#"(?is)\bid\s*=\s*["']seat-([^"']+)["']"#).unwrap());
             let exam_id = re_seat_id
                 .captures(tr_content)
                 .and_then(|c| c.get(1))
@@ -427,24 +526,48 @@ impl Parser {
             // Extract location: campus, building, room from the first <td>
             // Find spans in first <td> that are NOT seat-id spans
             static RE_TD1: OnceLock<Regex> = OnceLock::new();
-            let re_td1 = RE_TD1.get_or_init(|| Regex::new(r"<td[^>]*?>(.*?)</td>").unwrap());
+            let re_td1 =
+                RE_TD1.get_or_init(|| Regex::new(r"(?is)<td\b[^>]*>(.*?)</td\s*>").unwrap());
 
-            let mut location_parts = Vec::new();
-            if let Some(td_caps) = re_td1.captures(tr_content) {
-                let td_content = td_caps.get(1).unwrap().as_str();
-                // Match spans that don't have id="seat-"
-                static RE_LOC_SPAN: OnceLock<Regex> = OnceLock::new();
-                let re_loc_span = RE_LOC_SPAN.get_or_init(|| {
-                    Regex::new(r#"<span(?!\s+id="seat-)[^>]*?>(.*?)</span>"#).unwrap()
-                });
-                for cap in re_loc_span.captures_iter(td_content) {
-                    let text = cap.get(1).unwrap().as_str().trim().to_string();
-                    if !text.is_empty() {
-                        location_parts.push(text);
+            let location_parts = if let Some(td_caps) = re_td1.captures(tr_content) {
+                static RE_LOCATION_SPAN_V2: OnceLock<Regex> = OnceLock::new();
+                let span_regex = RE_LOCATION_SPAN_V2
+                    .get_or_init(|| Regex::new(r"(?is)<span\b([^>]*)>(.*?)</span\s*>").unwrap());
+                span_regex
+                    .captures_iter(td_caps.get(1).unwrap().as_str())
+                    .filter(|span| !re_seat_id.is_match(span.get(1).unwrap().as_str()))
+                    .map(|span| normalized_html_text(span.get(2).unwrap().as_str()))
+                    .filter(|text| !text.is_empty())
+                    .collect::<Vec<_>>()
+            } else {
+                Vec::new()
+            };
+
+            // Retained only as historical context; the old negative look-ahead is
+            // unsupported by Rust's regex engine and must never be constructed.
+            #[cfg(any())]
+            {
+                let mut location_parts = Vec::new();
+                if let Some(td_caps) = re_td1.captures(tr_content) {
+                    let td_content = td_caps.get(1).unwrap().as_str();
+                    // Match spans that don't have id="seat-"
+                    static RE_LOC_SPAN: OnceLock<Regex> = OnceLock::new();
+                    let re_loc_span = RE_LOC_SPAN.get_or_init(|| {
+                        Regex::new(r#"<span(?!\s+id="seat-)[^>]*?>(.*?)</span>"#).unwrap()
+                    });
+                    for cap in re_loc_span.captures_iter(td_content) {
+                        let text = cap.get(1).unwrap().as_str().trim().to_string();
+                        if !text.is_empty() {
+                            location_parts.push(text);
+                        }
                     }
                 }
             }
             let location = location_parts.join("-");
+
+            if course.is_empty() && time.is_empty() {
+                continue;
+            }
 
             let course_display = if exam_type.is_empty() {
                 course
