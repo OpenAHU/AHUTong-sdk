@@ -2,7 +2,7 @@ use crate::data::api::client::AHUClient;
 use crate::data::model::{Course, Exam, User};
 use crate::utils::des::DES;
 use crate::utils::parser::Parser;
-use anyhow::{anyhow, Context, Result};
+use anyhow::{Context, Result, anyhow};
 use log::{debug, error, info, warn};
 use serde::Serialize;
 use serde_json::Value;
@@ -227,7 +227,22 @@ impl Crawler {
             semester_id, semester_name
         );
 
-        let target_semester_id = semester_id + semester_offset;
+        let target_semester_id = if semester_offset == 0 {
+            semester_id
+        } else {
+            Parser::resolve_next_semester_id(&basic_info_html, semester_id, &semester_name)
+                .unwrap_or_else(|| {
+                    warn!(
+                        "[RustSDKSchedule] Semester options unavailable; falling back to legacy offset {}",
+                        semester_offset
+                    );
+                    semester_id + semester_offset
+                })
+        };
+        info!(
+            "[RustSDKSchedule] Resolved target semester id={}",
+            target_semester_id
+        );
         let course_json = self
             .client
             .get_course(target_semester_id, semester_id, false)

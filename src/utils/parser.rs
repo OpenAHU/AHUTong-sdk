@@ -10,6 +10,12 @@ struct CurrentSemester {
     name: String,
 }
 
+#[derive(Deserialize, Debug)]
+struct SemesterOption {
+    id: i32,
+    name: String,
+}
+
 #[cfg(test)]
 mod exam_tests {
     use super::Parser;
@@ -68,6 +74,40 @@ mod exam_tests {
     }
 }
 
+#[cfg(test)]
+mod semester_tests {
+    use super::Parser;
+
+    #[test]
+    fn resolves_actual_next_semester_id_instead_of_assuming_fixed_offset() {
+        let html = r#"
+            <script>
+                const semesters = JSON.parse('[{\"id\":101,\"name\":\"2025-2026-2\"},{\"id\":137,\"name\":\"2026-2027-1\"}]');
+                const currentSemester = {"id":101,"name":"2025-2026-2"};
+            </script>
+        "#;
+
+        assert_eq!(
+            Parser::resolve_next_semester_id(html, 101, "2025-2026-2"),
+            Some(137)
+        );
+    }
+
+    #[test]
+    fn resolves_next_semester_from_reverse_ordered_options() {
+        let html = r#"
+            <script>
+                let semesters = JSON.parse('[{\"id\":180,\"name\":\"2026-2027-2\"},{\"id\":160,\"name\":\"2026-2027-1\"},{\"id\":140,\"name\":\"2025-2026-2\"}]');
+            </script>
+        "#;
+
+        assert_eq!(
+            Parser::resolve_next_semester_id(html, 140, "2025-2026-2"),
+            Some(160)
+        );
+    }
+}
+
 pub struct Parser;
 
 fn json_scalar_string(value: &serde_json::Value) -> String {
@@ -93,8 +133,29 @@ fn normalized_html_text(value: &str) -> String {
     text.split_whitespace().collect::<Vec<_>>().join(" ")
 }
 
+fn semester_order(name: &str) -> Option<i32> {
+    let values = name
+        .split(|character: char| !character.is_ascii_digit())
+        .filter(|part| !part.is_empty())
+        .filter_map(|part| part.parse::<i32>().ok())
+        .collect::<Vec<_>>();
+    let start_year = values.iter().copied().find(|value| *value >= 2000)?;
+    let term = values
+        .iter()
+        .rev()
+        .copied()
+        .find(|value| (1..=2).contains(value))?;
+    Some(start_year * 10 + term)
+}
+
 impl Parser {
     pub fn parse_current_semester(html: &str) -> Option<(i32, String)> {
+        let normalized_html = html
+            .replace("let currentSemester", "var currentSemester")
+            .replace("const currentSemester", "var currentSemester")
+            .replace("let semesters", "var semesters")
+            .replace("const semesters", "var semesters");
+        let html = normalized_html.as_str();
         // 定义一个通用的提取器，作用于任意文本片段（无论是整个 HTML 还是 Script 块）
         let extract_from_text = |text: &str| -> Option<(i32, String)> {
             // 尝试多种正则模式匹配 currentSemester
@@ -412,14 +473,64 @@ impl Parser {
     }
 
     pub fn parse_semesters_list(html: &str) -> Option<String> {
-        static RE: OnceLock<Regex> = OnceLock::new();
-        // 增加 (?s) 支持跨行匹配，与 Master 分支 DOT_MATCHES_ALL 保持一致
-        let re = RE.get_or_init(|| {
-            Regex::new(r"(?s)var\s+semesters\s*=\s*JSON\.parse\(\s*'(.*?)'\s*\);").unwrap()
+        static RE_SINGLE: OnceLock<Regex> = OnceLock::new();
+        static RE_DOUBLE: OnceLock<Regex> = OnceLock::new();
+        let single = RE_SINGLE.get_or_init(|| {
+            Regex::new(
+                r#"(?s)(?:var|let|const)\s+semesters\s*=\s*JSON\.parse\(\s*'((?:\\.|[^'])*)'\s*\)"#,
+            )
+            .unwrap()
+        });
+        let double = RE_DOUBLE.get_or_init(|| {
+            Regex::new(
+                r#"(?s)(?:var|let|const)\s+semesters\s*=\s*JSON\.parse\(\s*"((?:\\.|[^"])*)"\s*\)"#,
+            )
+            .unwrap()
         });
 
-        re.captures(html)
-            .and_then(|caps| caps.get(1).map(|m| m.as_str().to_string()))
+        single
+            .captures(html)
+            .or_else(|| double.captures(html))
+            .and_then(|captures| captures.get(1).map(|value| value.as_str().to_string()))
+    }
+
+    pub fn resolve_next_semester_id(
+        html: &str,
+        current_id: i32,
+        current_name: &str,
+    ) -> Option<i32> {
+        let mut serialized = Self::parse_semesters_list(html)?;
+        let mut semesters = None;
+        for _ in 0..3 {
+            if let Ok(parsed) = serde_json::from_str::<Vec<SemesterOption>>(&serialized) {
+                semesters = Some(parsed);
+                break;
+            }
+            serialized = serialized
+                .replace("\\\"", "\"")
+                .replace("\\'", "'")
+                .replace("&quot;", "\"");
+        }
+        let semesters = semesters?;
+
+        if let Some(current_order) = semester_order(current_name) {
+            if let Some(next) = semesters
+                .iter()
+                .filter_map(|semester| {
+                    let order = semester_order(&semester.name)?;
+                    (order > current_order).then_some((order, semester.id))
+                })
+                .min_by_key(|(order, _)| *order)
+            {
+                return Some(next.1);
+            }
+        }
+
+        semesters
+            .into_iter()
+            .filter(|semester| semester.id > current_id)
+            .min_by_key(|semester| semester.id)
+            .map(|semester| semester.id)
     }
 
     /// Parse exam info from the new server-rendered HTML table format.
