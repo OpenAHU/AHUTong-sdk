@@ -1,6 +1,8 @@
 use axum::{Json, http::StatusCode, response::IntoResponse};
 use serde::Serialize;
 
+const PUBLIC_INTERNAL_ERROR: &str = "campus_service_error";
+
 #[derive(Debug)]
 pub enum AppError {
     Anyhow(anyhow::Error),
@@ -15,9 +17,10 @@ pub struct ErrorBody {
 impl IntoResponse for AppError {
     fn into_response(self) -> axum::response::Response {
         match self {
-            AppError::Anyhow(err) => {
+            AppError::Anyhow(_) => {
+                log::error!("Local campus service request failed");
                 let body = Json(ErrorBody {
-                    error: err.to_string(),
+                    error: PUBLIC_INTERNAL_ERROR.to_string(),
                 });
                 (StatusCode::INTERNAL_SERVER_ERROR, body).into_response()
             }
@@ -41,5 +44,28 @@ impl From<anyhow::Error> for AppError {
 impl From<StatusCode> for AppError {
     fn from(s: StatusCode) -> Self {
         Self::Status(s)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use axum::body::to_bytes;
+
+    #[tokio::test]
+    async fn internal_error_response_never_exposes_upstream_details() {
+        let secret =
+            "https://ycard.ahu.edu.cn/redirect?ticket=ST-secret&synjones-auth=token-secret";
+        let response = AppError::Anyhow(anyhow::anyhow!(secret)).into_response();
+        assert_eq!(response.status(), StatusCode::INTERNAL_SERVER_ERROR);
+
+        let body = to_bytes(response.into_body(), usize::MAX)
+            .await
+            .expect("read response body");
+        let text = String::from_utf8(body.to_vec()).expect("utf8 JSON body");
+        assert_eq!(text, r#"{"error":"campus_service_error"}"#);
+        assert!(!text.contains("ST-secret"));
+        assert!(!text.contains("token-secret"));
+        assert!(!text.contains("ticket="));
     }
 }

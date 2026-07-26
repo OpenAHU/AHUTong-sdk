@@ -28,17 +28,18 @@ impl Crawler {
     }
 
     pub async fn login(&self, username: &str, password: &str) -> Result<User> {
-        info!("Starting login flow for user: {}", username);
+        info!("Starting login flow");
         let mut login_success_info: Option<Value> = None;
-        let mut last_auth_code_error: Option<String> = None;
+        let mut fetched_auth_code = false;
         for i in 0..5 {
             info!("ADWMH login attempt {}/5", i + 1);
             let auth_code_bytes = match self.client.get_auth_code().await {
-                Ok(bytes) => bytes,
-                Err(e) => {
-                    let message = format!("{:#}", e);
-                    warn!("Failed to get auth code on attempt {}: {}", i + 1, message);
-                    last_auth_code_error = Some(message);
+                Ok(bytes) => {
+                    fetched_auth_code = true;
+                    bytes
+                }
+                Err(_) => {
+                    warn!("Failed to get auth code on attempt {}", i + 1);
                     continue;
                 }
             };
@@ -50,12 +51,9 @@ impl Crawler {
                 .await;
 
             let captcha_code = match captcha_res {
-                Ok(res) => {
-                    debug!("OCR Service Response: {:?}", res);
-                    res["result"].as_str().unwrap_or("").to_string()
-                }
-                Err(e) => {
-                    warn!("OCR Service Request Failed: {:?}", e);
+                Ok(res) => res["result"].as_str().unwrap_or("").to_string(),
+                Err(_) => {
+                    warn!("OCR service request failed");
                     String::new()
                 }
             };
@@ -64,7 +62,7 @@ impl Crawler {
                 warn!("Captcha recognition failed (empty result), retrying...");
                 continue;
             }
-            debug!("Captcha recognized: {}", captcha_code);
+            debug!("Captcha recognition succeeded");
 
             let adwmh_login = self
                 .client
@@ -75,16 +73,16 @@ impl Crawler {
                 login_success_info = Some(adwmh_login);
                 break;
             } else {
-                warn!("ADWMH login failed: {:?}", adwmh_login);
+                warn!("ADWMH login rejected");
             }
         }
 
         // Master 分支逻辑：ADWMH 登录必须成功，否则整个登录失败
         let login_info = login_success_info.ok_or_else(|| {
-            if let Some(error) = last_auth_code_error {
-                anyhow!("Failed to get auth code after 5 attempts: {}", error)
+            if !fetched_auth_code {
+                anyhow!("auth_code_unavailable")
             } else {
-                anyhow!("ADWMH login failed after 5 attempts")
+                anyhow!("campus_login_rejected")
             }
         })?;
 
@@ -105,15 +103,10 @@ impl Crawler {
             match verify {
                 Ok(_) => {
                     info!("Session verification successful (Grade sheet accessible).");
-                    // 打印 Cookie
-                    debug!("Cookies: {}", self.client.get_cookies_flat_json());
                     return Ok(user);
                 }
-                Err(e) => {
-                    warn!(
-                        "Session verification failed despite being on home page: {}. Forcing re-login...",
-                        e
-                    );
+                Err(_) => {
+                    warn!("Session verification failed; forcing re-login");
                     // 如果验证失败，说明 Cookie 其实是坏的，或者被软拦截了。
                     // 这里可以选择继续往下走（尝试 CAS 登录），或者报错。
                     // 继续往下走可能会因为没有 LT 参数而失败。
@@ -128,24 +121,12 @@ impl Crawler {
             None => {
                 // 如果解析失败，可能是因为 ADWMH 登录后 Cookie 已过期，CAS 页面不是预期的登录页
                 // 或者是因为已经被重定向到了其他页面
-                error!("CAS param parse failed. Current URL: {}", current_url_str);
-                // 打印一部分 HTML 以供调试，但截断以防止日志过长
-                let preview_len = std::cmp::min(login_page_html.len(), 500);
-                error!(
-                    "HTML content (first {} chars): {:.500}",
-                    preview_len, login_page_html
-                );
-                return Err(anyhow!(
-                    "Failed to parse CAS login params from {}",
-                    current_url_str
-                ));
+                error!("CAS param parse failed");
+                return Err(anyhow!("cas_parameter_parse_failed"));
             }
         };
 
-        info!(
-            "CAS params extracted: lt={}, execution={}, action={}",
-            lt, execution, action
-        );
+        info!("CAS parameters extracted");
 
         // Kotlin 使用 length() (UTF-16 char count)，Rust len() 是 byte count。
         // 为了与 Java 行为完全一致（包括 Emoji 等 surrogate pairs），必须使用 UTF-16 code units count。
@@ -166,7 +147,7 @@ impl Crawler {
             format!("https://one.ahu.edu.cn{}", action)
         };
 
-        info!("Performing JWXT CAS login to: {}", login_url);
+        info!("Performing JWXT CAS login");
         let response = self
             .client
             .jwxt_login(&login_url, &cipher, ul, pl, &lt, &execution, "submit")
@@ -175,14 +156,14 @@ impl Crawler {
 
         // if (jwxtResponse.raw().request.url.toString().endsWith(Constants.JWXT_HOME))
         let final_url = response.url().as_str();
-        info!("JWXT login final URL: {}", final_url);
+        info!("JWXT login redirect received");
 
         if final_url == JWXT_HOME || final_url.ends_with("/student/home") {
             info!("JWXT login success verified");
             Ok(user)
         } else {
             warn!("JWXT login failed (redirect mismatch). Expected ending with /student/home");
-            Err(anyhow!("JWXT Login failed: redirected to {}", final_url))
+            Err(anyhow!("jwxt_redirect_mismatch"))
         }
     }
 

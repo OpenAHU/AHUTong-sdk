@@ -29,7 +29,9 @@ impl AHUClient {
             .unwrap_or_else(|_| Client::new());
 
         #[cfg(target_arch = "wasm32")]
-        let http = ClientBuilder::new().build().unwrap_or_else(|_| Client::new());
+        let http = ClientBuilder::new()
+            .build()
+            .unwrap_or_else(|_| Client::new());
 
         Self {
             http,
@@ -95,11 +97,11 @@ impl AHUClient {
                     };
 
                     if let Ok(url) = url::Url::parse(&url_str) {
-                        if let Err(e) = store.parse(&cookie_str, &url) {
-                            log::warn!("[RustSDKCookie] Failed to parse cookie '{}': {:?}", name, e);
+                        if store.parse(&cookie_str, &url).is_err() {
+                            log::warn!("[RustSDKCookie] Failed to parse one restored cookie");
                         }
                     } else {
-                        log::warn!("[RustSDKCookie] Invalid URL for cookie domain: {}", url_str);
+                        log::warn!("[RustSDKCookie] Invalid domain in restored cookie");
                     }
                 }
             } else {
@@ -159,17 +161,10 @@ impl AHUClient {
         #[cfg(not(target_arch = "wasm32"))]
         {
             let store = self.cookie_store.lock().unwrap();
-            log::info!("[RustSDKCookie] Current Cookies in Store:");
-            for cookie in store.iter_any() {
-                log::info!(
-                    "[RustSDKCookie] Name: {}, Domain: {:?}, Path: {:?}, Secure: {:?}, Expires: {:?}",
-                    cookie.name(),
-                    cookie.domain(),
-                    cookie.path(),
-                    cookie.secure(),
-                    cookie.expires()
-                );
-            }
+            log::info!(
+                "[RustSDKCookie] Current cookie count: {}",
+                store.iter_any().count()
+            );
         }
     }
 
