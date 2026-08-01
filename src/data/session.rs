@@ -47,8 +47,12 @@ pub(crate) fn ensure_authenticated_response(
 
 fn is_login_url(url: &Url) -> bool {
     let path = url.path().trim_end_matches('/').to_ascii_lowercase();
+    let school_host = url
+        .host_str()
+        .is_some_and(|host| host == "ahu.edu.cn" || host.ends_with(".ahu.edu.cn"));
     path.ends_with("/cas/login")
         || path.ends_with("/student/sso/login")
+        || (school_host && path == "/login")
         || path.contains("/tologin")
         || path.ends_with("/refer")
 }
