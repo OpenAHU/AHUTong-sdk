@@ -1,6 +1,5 @@
 use crate::data::api::client::AHUClient;
 use anyhow::anyhow;
-use reqwest::Result;
 use reqwest::multipart;
 use serde_json::Value;
 
@@ -40,7 +39,7 @@ impl AHUClient {
         password: &str,
         flag: i32,
         imgcode: &str,
-    ) -> Result<Value> {
+    ) -> reqwest::Result<Value> {
         let params = [
             ("username", username),
             ("pwd", password),
@@ -58,26 +57,22 @@ impl AHUClient {
     }
 
     // @GET("/xzxcard/yue")
-    pub async fn get_balance(&self) -> Result<Value> {
-        self.http
-            .get(format!("{}/xzxcard/yue", BASE_URL))
-            .send()
-            .await?
-            .json::<Value>()
+    pub async fn get_balance(&self) -> anyhow::Result<Value> {
+        self.authenticated_json(self.http.get(format!("{}/xzxcard/yue", BASE_URL)))
             .await
     }
 
     // @GET("/xzxcard/qrcode")
-    pub async fn get_qrcode(&self) -> Result<Value> {
-        self.http
-            .get(format!("{}/xzxcard/qrcode", BASE_URL))
-            .send()
-            .await?
-            .json::<Value>()
+    pub async fn get_qrcode(&self) -> anyhow::Result<Value> {
+        self.authenticated_json(self.http.get(format!("{}/xzxcard/qrcode", BASE_URL)))
             .await
     }
 
-    pub async fn get_captcha_result(&self, url: &str, image_bytes: Vec<u8>) -> Result<Value> {
+    pub async fn get_captcha_result(
+        &self,
+        url: &str,
+        image_bytes: Vec<u8>,
+    ) -> reqwest::Result<Value> {
         let part = multipart::Part::bytes(image_bytes)
             .file_name("img.jpg")
             .mime_str("image/jpg")?;
@@ -95,8 +90,7 @@ impl AHUClient {
             .build()?;
 
         #[cfg(target_arch = "wasm32")]
-        let client = reqwest::Client::builder()
-            .build()?;
+        let client = reqwest::Client::builder().build()?;
 
         client
             .post(url)

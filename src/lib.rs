@@ -8,6 +8,7 @@ pub mod data {
     pub mod auth;
     pub mod crawler;
     pub mod model;
+    pub mod session;
 }
 
 pub mod utils {

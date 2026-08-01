@@ -21,15 +21,9 @@ impl AuthManager {
     }
 
     pub async fn refresh_token(&self) -> Result<String> {
-        let response = self
-            .client
-            .ycard_login_redirect(None)
-            .await
-            .map_err(|_| anyhow!("ycard_redirect_failed"))?;
+        let final_url = self.client.ycard_login_redirect(None).await?;
 
-        let final_url = response.url().as_str();
-
-        let ticket = extract_ticket(final_url)?;
+        let ticket = extract_ticket(final_url.as_str())?;
 
         // URLDecoder.decode(URLDecoder.decode(ticket, "UTF-8"), "UTF-8")
         let decoded_once = decode(ticket)
@@ -43,8 +37,7 @@ impl AuthManager {
         let token_res = self
             .client
             .get_token(&decoded_username, &decoded_username)
-            .await
-            .map_err(|_| anyhow!("ycard_token_exchange_failed"))?;
+            .await?;
 
         let access_token = token_res["access_token"]
             .as_str()

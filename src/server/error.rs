@@ -3,16 +3,22 @@ use serde::Serialize;
 
 const PUBLIC_INTERNAL_ERROR: &str = "campus_service_error";
 const PUBLIC_UNAVAILABLE_ERROR: &str = "campus_service_unavailable";
+const PUBLIC_LOGIN_REJECTED_ERROR: &str = "campus_login_rejected";
 
 enum PublicError {
-    Unauthorized,
+    SessionExpired,
+    LoginRejected,
     Unavailable,
     Internal,
 }
 
 fn classify(error: &anyhow::Error) -> PublicError {
+    if crate::data::session::is_session_expired(error) {
+        return PublicError::SessionExpired;
+    }
+
     match error.to_string().as_str() {
-        "campus_login_rejected" => PublicError::Unauthorized,
+        "campus_login_rejected" => PublicError::LoginRejected,
         "auth_code_unavailable"
         | "cas_parameter_parse_failed"
         | "jwxt_redirect_mismatch"
@@ -40,7 +46,18 @@ impl IntoResponse for AppError {
     fn into_response(self) -> axum::response::Response {
         match self {
             AppError::Anyhow(error) => match classify(&error) {
-                PublicError::Unauthorized => StatusCode::UNAUTHORIZED.into_response(),
+                PublicError::SessionExpired => {
+                    let body = Json(ErrorBody {
+                        error: crate::data::session::CAMPUS_SESSION_EXPIRED_CODE.to_string(),
+                    });
+                    (StatusCode::UNAUTHORIZED, body).into_response()
+                }
+                PublicError::LoginRejected => {
+                    let body = Json(ErrorBody {
+                        error: PUBLIC_LOGIN_REJECTED_ERROR.to_string(),
+                    });
+                    (StatusCode::UNAUTHORIZED, body).into_response()
+                }
                 PublicError::Unavailable => {
                     log::warn!("Local campus service dependency unavailable");
                     let body = Json(ErrorBody {
@@ -106,6 +123,24 @@ mod tests {
         let unauthorized =
             AppError::Anyhow(anyhow::anyhow!("campus_login_rejected")).into_response();
         assert_eq!(unauthorized.status(), StatusCode::UNAUTHORIZED);
+        let body = to_bytes(unauthorized.into_body(), usize::MAX)
+            .await
+            .expect("read login rejection body");
+        assert_eq!(
+            String::from_utf8(body.to_vec()).expect("utf8 JSON body"),
+            r#"{"error":"campus_login_rejected"}"#
+        );
+
+        let expired =
+            AppError::Anyhow(crate::data::session::session_expired_error()).into_response();
+        assert_eq!(expired.status(), StatusCode::UNAUTHORIZED);
+        let body = to_bytes(expired.into_body(), usize::MAX)
+            .await
+            .expect("read session-expired body");
+        assert_eq!(
+            String::from_utf8(body.to_vec()).expect("utf8 JSON body"),
+            r#"{"error":"campus_session_expired"}"#
+        );
 
         let unavailable = AppError::Anyhow(anyhow::anyhow!("ycard_ticket_missing")).into_response();
         assert_eq!(unavailable.status(), StatusCode::SERVICE_UNAVAILABLE);
@@ -116,5 +151,19 @@ mod tests {
             String::from_utf8(body.to_vec()).expect("utf8 JSON body"),
             r#"{"error":"campus_service_unavailable"}"#
         );
+    }
+
+    #[tokio::test]
+    async fn unrelated_failures_never_become_unauthorized() {
+        for error in [
+            anyhow::anyhow!("campus_network_error"),
+            anyhow::anyhow!("campus_upstream_http_status_500"),
+            anyhow::anyhow!("campus_json_parse_failed"),
+        ] {
+            assert_ne!(
+                AppError::Anyhow(error).into_response().status(),
+                StatusCode::UNAUTHORIZED
+            );
+        }
     }
 }

@@ -1,5 +1,6 @@
 use crate::data::api::client::AHUClient;
-use reqwest::{RequestBuilder, Response, Result};
+use anyhow::Result;
+use reqwest::{RequestBuilder, Url};
 use serde_json::Value;
 
 const BASE_URL: &str = "https://ycard.ahu.edu.cn";
@@ -16,16 +17,19 @@ impl AHUClient {
     }
 
     // @GET("/berserker-auth/cas/redirect/neusoftCas")
-    pub async fn ycard_login_redirect(&self, target_url: Option<&str>) -> Result<Response> {
+    pub async fn ycard_login_redirect(&self, target_url: Option<&str>) -> Result<Url> {
         let target = target_url.unwrap_or("https://ycard.ahu.edu.cn/plat/?name=loginTransit");
-        self.http
-            .get(format!(
-                "{}/berserker-auth/cas/redirect/neusoftCas",
-                BASE_URL
-            ))
-            .query(&[("targetUrl", target)])
-            .send()
-            .await
+        let (_, final_url) = self
+            .authenticated_page(
+                self.http
+                    .get(format!(
+                        "{}/berserker-auth/cas/redirect/neusoftCas",
+                        BASE_URL
+                    ))
+                    .query(&[("targetUrl", target)]),
+            )
+            .await?;
+        Ok(final_url)
     }
 
     // @GET("/berserker-app/ykt/tsm/queryCard") -> @GET("/campus-card/")
@@ -35,18 +39,13 @@ impl AHUClient {
             token_guard.as_deref().unwrap_or("").to_string()
         };
 
-        self.http
-            .get(format!("{}/campus-card/", BASE_URL))
-            .query(&[
-                ("name", "cardRecharge"),
-                ("appId", "27"),
-                ("synAccessSource", "h5"),
-                ("synjones-auth", &token),
-            ])
-            .send()
-            .await?
-            .text()
-            .await
+        self.authenticated_text(self.http.get(format!("{}/campus-card/", BASE_URL)).query(&[
+            ("name", "cardRecharge"),
+            ("appId", "27"),
+            ("synAccessSource", "h5"),
+            ("synjones-auth", &token),
+        ]))
+        .await
     }
 
     // @POST("/charge/order/thirdOrder")
@@ -56,7 +55,7 @@ impl AHUClient {
             .post(format!("{}/charge/order/thirdOrder", BASE_URL))
             .json(body);
 
-        self.with_auth(builder).await.send().await?.text().await
+        self.authenticated_text(self.with_auth(builder).await).await
     }
 
     // @POST("/charge/feeitem/getThirdData")
@@ -66,7 +65,7 @@ impl AHUClient {
             .post(format!("{}/charge/feeitem/getThirdData", BASE_URL))
             .json(body);
 
-        self.with_auth(builder).await.send().await?.text().await
+        self.authenticated_text(self.with_auth(builder).await).await
     }
 
     // @POST("/blade-pay/pay")
@@ -76,7 +75,7 @@ impl AHUClient {
             .post(format!("{}/blade-pay/pay", BASE_URL))
             .json(body);
 
-        self.with_auth(builder).await.send().await?.text().await
+        self.authenticated_text(self.with_auth(builder).await).await
     }
 
     // @POST("/berserker-auth/oauth/token")
@@ -95,14 +94,13 @@ impl AHUClient {
         let auth_header =
             "Basic bW9iaWxlX3NlcnZpY2VfcGxhdGZvcm06bW9iaWxlX3NlcnZpY2VfcGxhdGZvcm1fc2VjcmV0";
 
-        let response: Value = self
-            .http
-            .post(format!("{}/berserker-auth/oauth/token", BASE_URL))
-            .header("Authorization", auth_header)
-            .form(&params)
-            .send()
-            .await?
-            .json()
+        let response = self
+            .authenticated_json(
+                self.http
+                    .post(format!("{}/berserker-auth/oauth/token", BASE_URL))
+                    .header("Authorization", auth_header)
+                    .form(&params),
+            )
             .await?;
 
         if let Some(access_token) = response.get("access_token").and_then(|v| v.as_str()) {

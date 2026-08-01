@@ -185,18 +185,6 @@ impl Crawler {
             basic_info_html.len()
         );
 
-        // Check if it's a login page
-        if basic_info_html.contains("<title>登入页面</title>")
-            || basic_info_html.contains("id=\"loginForm\"")
-        {
-            error!(
-                "[RustSDKSchedule] Detected login page instead of course table. Session expired or invalid."
-            );
-            return Err(anyhow!(
-                "Session expired or invalid. Redirected to login page."
-            ));
-        }
-
         let (semester_id, semester_name) = Parser::parse_current_semester(&basic_info_html)
             .ok_or_else(|| {
                 error!("[RustSDKSchedule] Failed to parse current semester ID");

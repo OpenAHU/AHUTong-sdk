@@ -1,4 +1,7 @@
-use reqwest::{Client, ClientBuilder};
+use anyhow::{Result, anyhow};
+use reqwest::header::{CONTENT_TYPE, LOCATION};
+use reqwest::{Client, ClientBuilder, RequestBuilder, Url};
+use serde_json::Value;
 use std::sync::Arc;
 use tokio::sync::RwLock;
 
@@ -175,5 +178,57 @@ impl AHUClient {
             *store = reqwest_cookie_store::CookieStore::default();
             log::info!("[RustSDKCookie] All cookies cleared.")
         }
+    }
+
+    /// Executes an authenticated request and inspects the response before any
+    /// business parser runs. Error strings are stable and never include URLs,
+    /// cookies, tokens, tickets, passwords, or request/response bodies.
+    pub(crate) async fn authenticated_page(
+        &self,
+        request: RequestBuilder,
+    ) -> Result<(String, Url)> {
+        let response = request
+            .send()
+            .await
+            .map_err(|_| anyhow!("campus_network_error"))?;
+        let status = response.status();
+        let final_url = response.url().clone();
+        let content_type = response
+            .headers()
+            .get(CONTENT_TYPE)
+            .and_then(|value| value.to_str().ok())
+            .map(str::to_owned);
+        let redirect_location = response
+            .headers()
+            .get(LOCATION)
+            .and_then(|value| value.to_str().ok())
+            .map(str::to_owned);
+        let body = response
+            .text()
+            .await
+            .map_err(|_| anyhow!("campus_response_read_failed"))?;
+
+        crate::data::session::ensure_authenticated_response(
+            status,
+            &final_url,
+            content_type.as_deref(),
+            redirect_location.as_deref(),
+            &body,
+        )?;
+
+        if !status.is_success() {
+            return Err(anyhow!("campus_upstream_http_status_{}", status.as_u16()));
+        }
+
+        Ok((body, final_url))
+    }
+
+    pub(crate) async fn authenticated_text(&self, request: RequestBuilder) -> Result<String> {
+        self.authenticated_page(request).await.map(|(body, _)| body)
+    }
+
+    pub(crate) async fn authenticated_json(&self, request: RequestBuilder) -> Result<Value> {
+        let body = self.authenticated_text(request).await?;
+        serde_json::from_str(&body).map_err(|_| anyhow!("campus_json_parse_failed"))
     }
 }

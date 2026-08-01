@@ -1,12 +1,13 @@
 use crate::data::api::client::AHUClient;
-use reqwest::{Response, Result};
+use anyhow::Result;
+use reqwest::Response;
 use serde_json::Value;
 
 const BASE_URL: &str = "https://jw.ahu.edu.cn";
 
 impl AHUClient {
     // @GET("/student/sso/login")
-    pub async fn fetch_login_info(&self) -> Result<(String, reqwest::Url)> {
+    pub async fn fetch_login_info(&self) -> reqwest::Result<(String, reqwest::Url)> {
         let resp = self
             .http
             .get(format!("{}/student/sso/login", BASE_URL))
@@ -30,66 +31,58 @@ impl AHUClient {
             "{}/student/for-std/course-table/semester/{}/print-data",
             BASE_URL, semester_path_id
         );
-        self.http
-            .get(url)
-            .query(&[
-                ("semesterId", semester_path_id.to_string()),
-                ("hasExperiment", has_experiment.to_string()),
-            ])
-            .send()
-            .await?
-            .json::<Value>()
-            .await
+        self.authenticated_json(self.http.get(url).query(&[
+            ("semesterId", semester_path_id.to_string()),
+            ("hasExperiment", has_experiment.to_string()),
+        ]))
+        .await
     }
 
     // @GET("/student/for-std/course-table")
     pub async fn fetch_course_table_basic_info(&self) -> Result<String> {
-        self.http
-            .get(format!("{}/student/for-std/course-table", BASE_URL))
-            .send()
-            .await?
-            .text()
-            .await
+        self.authenticated_text(
+            self.http
+                .get(format!("{}/student/for-std/course-table", BASE_URL)),
+        )
+        .await
     }
 
     // @GET("/student/home/get-current-teach-week")
     pub async fn get_current_teach_week(&self) -> Result<Value> {
-        self.http
-            .get(format!("{}/student/home/get-current-teach-week", BASE_URL))
-            .send()
-            .await?
-            .json::<Value>()
-            .await
+        self.authenticated_json(
+            self.http
+                .get(format!("{}/student/home/get-current-teach-week", BASE_URL)),
+        )
+        .await
     }
 
     // @GET("/student/for-std/exam-arrange")
     pub async fn get_exam_info(&self) -> Result<String> {
-        self.http
-            .get(format!("{}/student/for-std/exam-arrange", BASE_URL))
-            .send()
-            .await?
-            .text()
-            .await
+        self.authenticated_text(
+            self.http
+                .get(format!("{}/student/for-std/exam-arrange", BASE_URL)),
+        )
+        .await
     }
 
     pub async fn get_grade_sheet_entry_url(&self) -> Result<String> {
-        let resp = self
-            .http
-            .get(format!("{}/student/for-std/grade/sheet", BASE_URL))
-            .send()
+        let (_, final_url) = self
+            .authenticated_page(
+                self.http
+                    .get(format!("{}/student/for-std/grade/sheet", BASE_URL)),
+            )
             .await?;
-        Ok(resp.url().to_string())
+        Ok(final_url.to_string())
     }
 
     pub async fn get_grade_sheet_entry_page(&self) -> Result<(String, String)> {
-        let resp = self
-            .http
-            .get(format!("{}/student/for-std/grade/sheet", BASE_URL))
-            .send()
+        let (html, final_url) = self
+            .authenticated_page(
+                self.http
+                    .get(format!("{}/student/for-std/grade/sheet", BASE_URL)),
+            )
             .await?;
-        let url = resp.url().to_string();
-        let html = resp.text().await?;
-        Ok((url, html))
+        Ok((final_url.to_string(), html))
     }
 
     // @GET("/student/for-std/grade/sheet")
@@ -97,37 +90,28 @@ impl AHUClient {
     // This interface return's student' grade, and it also returns student's ID via its redirect URL
     // So,before you get above data, you need access this interface to get student's ID
     pub async fn get_grade_sheet_entry(&self) -> Result<String> {
-        self.http
-            .get(format!("{}/student/for-std/grade/sheet", BASE_URL))
-            .send()
-            .await?
-            .text()
-            .await
+        self.authenticated_text(
+            self.http
+                .get(format!("{}/student/for-std/grade/sheet", BASE_URL)),
+        )
+        .await
     }
 
     // @GET("/student/for-std/grade/sheet/info/{id}")
     pub async fn get_grade_info(&self, id: &str) -> Result<Value> {
-        self.http
-            .get(format!(
-                "{}/student/for-std/grade/sheet/info/{}",
-                BASE_URL, id
-            ))
-            .send()
-            .await?
-            .json::<Value>()
-            .await
+        self.authenticated_json(self.http.get(format!(
+            "{}/student/for-std/grade/sheet/info/{}",
+            BASE_URL, id
+        )))
+        .await
     }
 
     pub async fn get_gpa_rank_page(&self, id: &str) -> Result<String> {
-        self.http
-            .get(format!(
-                "{}/student/for-std/grade/sheet/semester-index/{}",
-                BASE_URL, id
-            ))
-            .send()
-            .await?
-            .text()
-            .await
+        self.authenticated_text(self.http.get(format!(
+            "{}/student/for-std/grade/sheet/semester-index/{}",
+            BASE_URL, id
+        )))
+        .await
     }
 
     // @POST device
@@ -137,7 +121,7 @@ impl AHUClient {
         username_len: usize,
         password_len: usize,
         rsa: &str,
-    ) -> Result<String> {
+    ) -> reqwest::Result<String> {
         let params = [
             ("ul", username_len.to_string()),
             ("pl", password_len.to_string()),
@@ -158,7 +142,7 @@ impl AHUClient {
         lt: &str,
         execution: &str,
         event_id: &str,
-    ) -> Result<Response> {
+    ) -> reqwest::Result<Response> {
         let params = [
             ("rsa", rsa.to_string()),
             ("ul", username_len.to_string()),
