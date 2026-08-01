@@ -15,6 +15,11 @@ pub mod utils {
     pub mod parser;
 }
 
+mod diagnostics;
+
+#[cfg(test)]
+mod diagnostic_safety_tests;
+
 #[cfg(not(target_arch = "wasm32"))]
 pub mod updater;
 

@@ -19,17 +19,15 @@ impl AHUClient {
 
         let status = response.status();
         if !status.is_success() {
-            let body = response.text().await.unwrap_or_default();
             return Err(anyhow!(
-                "authcode request failed: status={}, body={}",
-                status,
-                body.chars().take(200).collect::<String>()
+                "authcode_request_failed_status_{}",
+                status.as_u16()
             ));
         }
 
         let bytes = response.bytes().await?;
         if bytes.is_empty() {
-            return Err(anyhow!("authcode response is empty"));
+            return Err(anyhow!("authcode_response_empty"));
         }
 
         Ok(bytes)

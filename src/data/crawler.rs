@@ -228,11 +228,15 @@ impl Crawler {
             .client
             .get_course(target_semester_id, semester_id, false)
             .await?;
-        debug!("[RustSDKSchedule] Course JSON: {:?}", course_json);
+        debug!("[RustSDKSchedule] Course response received");
 
         // 检查返回的 JSON 中是否有错误提示
-        if let Some(err_msg) = course_json.get("message").and_then(|v| v.as_str()) {
-            warn!("[RustSDKSchedule] Server returned message: {}", err_msg);
+        if course_json
+            .get("message")
+            .and_then(|v| v.as_str())
+            .is_some()
+        {
+            warn!("[RustSDKSchedule] Server returned a message");
         }
 
         let mut courses = Vec::new();
@@ -433,8 +437,6 @@ impl Crawler {
         let url = "https://openahu.org/download/xiaoli.jpg";
 
         info!("Crawler: Start downloading calendar.");
-        info!("Crawler: Target URL: {}", url);
-        info!("Crawler: Local Save Path: {}", save_path);
 
         // --- 第一步：建立网络连接 ---
         info!("Crawler: Sending HTTP GET request...");
@@ -445,7 +447,6 @@ impl Crawler {
             }
             Err(e) => {
                 error!("Crawler: Network Request FAILED. Could not connect to server.");
-                error!("Crawler: Network Error Details: {:?}", e);
                 if e.is_timeout() {
                     error!("Crawler: Reason: Connection Timed Out.");
                 } else if e.is_connect() {
@@ -461,10 +462,6 @@ impl Crawler {
 
         if !status.is_success() {
             error!("Crawler: Server refused the request!");
-            // 尝试读取服务器返回的错误信息（如果有）
-            if let Ok(text) = response.text().await {
-                error!("Crawler: Server Error Body: {}", text);
-            }
             return Err(anyhow::anyhow!(
                 "HTTP Request failed with status: {}",
                 status
@@ -483,7 +480,6 @@ impl Crawler {
             }
             Err(e) => {
                 error!("Crawler: Failed to read body bytes from stream.");
-                error!("Crawler: Stream Error Details: {:?}", e);
                 return Err(e.into());
             }
         };
@@ -493,12 +489,9 @@ impl Crawler {
         let path_obj = std::path::Path::new(save_path);
         if let Some(parent) = path_obj.parent() {
             if !parent.exists() {
-                info!(
-                    "Crawler: Parent directory {:?} does not exist. Attempting to create...",
-                    parent
-                );
-                if let Err(e) = tokio::fs::create_dir_all(parent).await {
-                    error!("Crawler: Failed to create parent directory: {:?}", e);
+                info!("Crawler: Parent directory is missing; attempting to create it.");
+                if tokio::fs::create_dir_all(parent).await.is_err() {
+                    error!("Crawler: Failed to create parent directory.");
                     // 这里不return，尝试直接写试试，或者直接报错
                 }
             }
@@ -510,10 +503,7 @@ impl Crawler {
                 info!("Crawler: File write operation returned OK.");
                 // 二次确认文件是否存在
                 if path_obj.exists() {
-                    info!(
-                        "Crawler: VERIFICATION SUCCESS: File exists at {}",
-                        save_path
-                    );
+                    info!("Crawler: VERIFICATION SUCCESS: Output file exists.");
                 } else {
                     warn!("Crawler: VERIFICATION WARNING: Write returned OK but file not found!");
                 }
@@ -521,7 +511,6 @@ impl Crawler {
             }
             Err(e) => {
                 error!("Crawler: File Write FAILED.");
-                error!("Crawler: IO Error Details: {:?}", e);
                 // 常见的 IO 错误分析
                 match e.kind() {
                     std::io::ErrorKind::PermissionDenied => error!(
@@ -624,5 +613,26 @@ mod grade_tests {
         )
         .unwrap();
         assert_eq!(rank["majorRank"], 5);
+    }
+
+    #[test]
+    fn diagnostics_never_log_response_payloads_or_local_paths() {
+        let source = include_str!("crawler.rs");
+        for fragments in [
+            ("Course JSON:", " {:?}"),
+            ("Server returned message:", " {}"),
+            ("Server Error Body:", " {}"),
+            ("Local Save Path:", " {}"),
+            ("Network Error Details:", " {:?}"),
+            ("Stream Error Details:", " {:?}"),
+            ("IO Error Details:", " {:?}"),
+            ("File exists at", " {}"),
+        ] {
+            let forbidden = format!("{}{}", fragments.0, fragments.1);
+            assert!(
+                !source.contains(&forbidden),
+                "forbidden diagnostic: {forbidden}"
+            );
+        }
     }
 }

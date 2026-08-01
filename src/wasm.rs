@@ -2,9 +2,13 @@ use crate::core::crawler;
 use serde_json::json;
 use wasm_bindgen::prelude::*;
 
-// 统一的错误处理，将 Rust Anyhow Error 转换为 JsValue 异常
-fn to_js_err(e: anyhow::Error) -> JsValue {
-    JsValue::from_str(&format!("{:#}", e))
+// Never expose an anyhow chain to JavaScript: reqwest and parsers can retain
+// request URLs, response fragments, or authentication parameters.
+fn to_js_err(error: anyhow::Error) -> JsValue {
+    JsValue::from_str(crate::diagnostics::public_error_code(
+        &error,
+        "campus_service_error",
+    ))
 }
 
 #[wasm_bindgen]

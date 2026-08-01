@@ -7,6 +7,17 @@ use log::{error, info};
 use std::ffi::c_void;
 use std::sync::Arc;
 
+fn error_json(error: &anyhow::Error, fallback: &'static str) -> String {
+    serde_json::json!({
+        "error": crate::diagnostics::public_error_code(error, fallback)
+    })
+    .to_string()
+}
+
+fn fixed_error_json(code: &'static str) -> String {
+    serde_json::json!({ "error": code }).to_string()
+}
+
 #[unsafe(no_mangle)]
 pub extern "system" fn JNI_OnLoad(vm: JavaVM, _reserved: *mut c_void) -> jint {
     let mut env = vm.get_env().expect("Cannot get reference to the JNIEnv");
@@ -154,11 +165,11 @@ pub extern "system" fn JNI_OnLoad(vm: JavaVM, _reserved: *mut c_void) -> jint {
     env.register_native_methods(&clazz, core_methods)
         .expect("Failed to register core native methods");
 
-    if let Err(e) = env.register_native_methods(&clazz, extended_methods) {
-        info!(
-            "Extended native methods not registered (expected on legacy APK): {:?}",
-            e
-        );
+    if env
+        .register_native_methods(&clazz, extended_methods)
+        .is_err()
+    {
+        info!("jni_extended_methods_unavailable");
     }
 
     JNI_VERSION_1_6
@@ -197,7 +208,7 @@ pub extern "system" fn login(
 
     match result {
         Ok(user) => {
-            info!("Login successful for user: {}", user.username);
+            info!("campus_login_succeeded");
             let _ = crate::core::persist_current_cookies();
             let json = serde_json::to_string(&user).unwrap();
             env.new_string(json).unwrap().into_raw()
@@ -206,9 +217,10 @@ pub extern "system" fn login(
             // 如果是因为已经登录（例如重定向到首页），也算成功，但不应该抛出错误
             // 这里我们已经在 crawler.rs 中处理了 "Already logged in" 返回 Ok(user)
             // 所以这里的 Err 确实是真正的错误
-            error!("Login failed: {:?}", e);
-            let err_json = serde_json::json!({ "error": e.to_string() });
-            env.new_string(err_json.to_string()).unwrap().into_raw()
+            error!("campus_login_failed");
+            env.new_string(error_json(&e, "campus_login_failed"))
+                .unwrap()
+                .into_raw()
         }
     }
 }
@@ -223,10 +235,10 @@ pub extern "system" fn get_schedule(mut env: JNIEnv, _class: JClass) -> jstring 
             let json = serde_json::to_string(&courses).unwrap();
             env.new_string(json).unwrap().into_raw()
         }
-        Err(e) => {
-            let err_json = serde_json::json!({ "error": e.to_string() });
-            env.new_string(err_json.to_string()).unwrap().into_raw()
-        }
+        Err(e) => env
+            .new_string(error_json(&e, "schedule_request_failed"))
+            .unwrap()
+            .into_raw(),
     }
 }
 
@@ -237,10 +249,10 @@ pub extern "system" fn refresh_token(mut env: JNIEnv, _class: JClass) -> jstring
 
     match result {
         Ok(token) => env.new_string(token).unwrap().into_raw(),
-        Err(e) => {
-            let err = serde_json::json!({ "error": e.to_string() });
-            env.new_string(err.to_string()).unwrap().into_raw()
-        }
+        Err(e) => env
+            .new_string(error_json(&e, "ycard_token_refresh_failed"))
+            .unwrap()
+            .into_raw(),
     }
 }
 
@@ -260,10 +272,10 @@ pub extern "system" fn get_qrcode(mut env: JNIEnv, _class: JClass) -> jstring {
             let json = serde_json::to_string(&val).unwrap();
             env.new_string(json).unwrap().into_raw()
         }
-        Err(e) => {
-            let err_json = serde_json::json!({ "error": e.to_string() });
-            env.new_string(err_json.to_string()).unwrap().into_raw()
-        }
+        Err(e) => env
+            .new_string(error_json(&e, "qrcode_request_failed"))
+            .unwrap()
+            .into_raw(),
     }
 }
 
@@ -277,10 +289,10 @@ pub extern "system" fn get_balance(mut env: JNIEnv, _class: JClass) -> jstring {
             let json = serde_json::to_string(&val).unwrap();
             env.new_string(json).unwrap().into_raw()
         }
-        Err(e) => {
-            let err_json = serde_json::json!({ "error": e.to_string() });
-            env.new_string(err_json.to_string()).unwrap().into_raw()
-        }
+        Err(e) => env
+            .new_string(error_json(&e, "balance_request_failed"))
+            .unwrap()
+            .into_raw(),
     }
 }
 
@@ -296,12 +308,10 @@ pub extern "system" fn get_exam_info(mut env: JNIEnv, _class: JClass) -> jstring
                 .expect("Couldn't create java string")
                 .into_raw()
         }
-        Err(e) => {
-            let err_json = serde_json::json!({ "error": e.to_string() });
-            env.new_string(err_json.to_string())
-                .expect("Couldn't create java string")
-                .into_raw()
-        }
+        Err(e) => env
+            .new_string(error_json(&e, "exam_request_failed"))
+            .expect("Couldn't create java string")
+            .into_raw(),
     }
 }
 
@@ -317,10 +327,10 @@ pub extern "system" fn get_grade(mut env: JNIEnv, _class: JClass) -> jstring {
             let json = serde_json::to_string(&val).unwrap();
             env.new_string(json).unwrap().into_raw()
         }
-        Err(e) => {
-            let err_json = serde_json::json!({ "error": e.to_string() });
-            env.new_string(err_json.to_string()).unwrap().into_raw()
-        }
+        Err(e) => env
+            .new_string(error_json(&e, "grade_request_failed"))
+            .unwrap()
+            .into_raw(),
     }
 }
 
@@ -333,18 +343,14 @@ pub extern "system" fn download_school_calendar(
     crate::core::init_logger();
 
     let path: String = match env.get_string(&save_path) {
-        Ok(s) => {
-            let s_str: String = s.into();
-            info!("JNI: Received save path from Java: {}", s_str);
-            s_str
-        }
-        Err(e) => {
-            error!("JNI: Failed to convert Java string to Rust string: {:?}", e);
+        Ok(s) => s.into(),
+        Err(_) => {
+            error!("calendar_path_invalid");
             return 0;
         }
     };
 
-    info!("JNI: Starting async download task...");
+    info!("calendar_download_started");
 
     let result = crate::core::runtime().block_on(async {
         let start_time = std::time::Instant::now();
@@ -356,26 +362,25 @@ pub extern "system" fn download_school_calendar(
         .await;
 
         let duration = start_time.elapsed();
-        info!("JNI: Async task finished in {:.2?}", duration);
+        info!(
+            "calendar_download_finished elapsed_ms={}",
+            duration.as_millis()
+        );
 
         task_result
     });
 
     match result {
         Ok(Ok(_)) => {
-            info!("JNI: Download function returned SUCCESS.");
+            info!("calendar_download_succeeded");
             1
         }
-        Ok(Err(e)) => {
-            error!("JNI: Download logic failed!");
-            error!("--- Error Chain Start ---");
-            error!("Root Error: {:?}", e);
-            error!("--- Error Chain End ---");
+        Ok(Err(_)) => {
+            error!("calendar_download_failed");
             0
         }
         Err(_) => {
-            error!("JNI: CRITICAL - Download task TIMED OUT after 60 seconds!");
-            error!("JNI: This usually indicates network blockage or very slow connection.");
+            error!("calendar_download_timed_out timeout_seconds=120");
             0
         }
     }
@@ -456,7 +461,7 @@ pub extern "system" fn download_update(
         Err(_) => return 0,
     };
 
-    info!("Starting update download from {} to {}", url, save_path);
+    info!("update_download_requested");
 
     let result = crate::core::runtime().block_on(async {
         crate::updater::download_and_verify_update(&url, &save_path, &expected_sha256, &signature)
@@ -468,8 +473,8 @@ pub extern "system" fn download_update(
             info!("Update downloaded and verified successfully");
             1
         }
-        Err(e) => {
-            error!("Update failed: {:?}", e);
+        Err(_) => {
+            error!("update_download_failed");
             0
         }
     }
@@ -500,15 +505,15 @@ pub extern "system" fn check_apk_update(
 
     match result {
         Ok(info_obj) => {
-            let json = serde_json::to_string(&info_obj).unwrap_or_else(|e| {
-                serde_json::json!({ "error": format!("serialize failed: {}", e) }).to_string()
-            });
+            let json = serde_json::to_string(&info_obj)
+                .unwrap_or_else(|_| fixed_error_json("update_response_serialize_failed"));
             env.new_string(json).unwrap().into_raw()
         }
         Err(e) => {
-            error!("checkApkUpdate failed: {:?}", e);
-            let err_json = serde_json::json!({ "error": e.to_string() }).to_string();
-            env.new_string(err_json).unwrap().into_raw()
+            error!("update_check_failed");
+            env.new_string(error_json(&e, "update_check_failed"))
+                .unwrap()
+                .into_raw()
         }
     }
 }
@@ -540,7 +545,7 @@ pub extern "system" fn download_apk_update(
         Err(_) => return 0,
     };
 
-    info!("downloadApkUpdate: {} -> {}", url, save_path);
+    info!("update_download_requested");
 
     let result = crate::core::runtime().block_on(async {
         crate::updater::download_and_verify_update(&url, &save_path, &expected_sha256, &signature)
@@ -552,8 +557,8 @@ pub extern "system" fn download_apk_update(
             info!("downloadApkUpdate success");
             1
         }
-        Err(e) => {
-            error!("downloadApkUpdate failed: {:?}", e);
+        Err(_) => {
+            error!("update_download_failed");
             0
         }
     }
@@ -589,24 +594,21 @@ pub extern "system" fn download_apk_update_with_progress(
 
     let cb_global: GlobalRef = match env.new_global_ref(callback) {
         Ok(r) => r,
-        Err(e) => {
-            error!(
-                "downloadApkUpdateWithProgress: new_global_ref failed: {:?}",
-                e
-            );
+        Err(_) => {
+            error!("update_progress_callback_reference_failed");
             return 0;
         }
     };
 
     let jvm = match env.get_java_vm() {
         Ok(vm) => vm,
-        Err(e) => {
-            error!("downloadApkUpdateWithProgress: get_java_vm failed: {:?}", e);
+        Err(_) => {
+            error!("update_progress_vm_unavailable");
             return 0;
         }
     };
 
-    info!("downloadApkUpdateWithProgress: {} -> {}", url, save_path);
+    info!("update_download_with_progress_requested");
 
     let cb_global = Arc::new(cb_global);
 
@@ -621,11 +623,8 @@ pub extern "system" fn download_apk_update_with_progress(
             move |downloaded: u64, total: i64| {
                 let mut env = match jvm.attach_current_thread() {
                     Ok(e) => e,
-                    Err(e) => {
-                        error!(
-                            "downloadApkUpdateWithProgress: attach_current_thread failed: {:?}",
-                            e
-                        );
+                    Err(_) => {
+                        error!("update_progress_thread_attach_failed");
                         return;
                     }
                 };
@@ -633,11 +632,11 @@ pub extern "system" fn download_apk_update_with_progress(
                 // callback.onProgress(downloaded, total)
                 let args = &[JValue::Long(downloaded as i64), JValue::Long(total as i64)];
 
-                if let Err(e) = env.call_method(cb.as_obj(), "onProgress", "(JJ)V", args) {
-                    error!(
-                        "downloadApkUpdateWithProgress: call onProgress failed: {:?}",
-                        e
-                    );
+                if env
+                    .call_method(cb.as_obj(), "onProgress", "(JJ)V", args)
+                    .is_err()
+                {
+                    error!("update_progress_callback_failed");
                 }
             },
         )
@@ -649,8 +648,8 @@ pub extern "system" fn download_apk_update_with_progress(
             info!("downloadApkUpdateWithProgress success");
             1
         }
-        Err(e) => {
-            error!("downloadApkUpdateWithProgress failed: {:?}", e);
+        Err(_) => {
+            error!("update_download_with_progress_failed");
             0
         }
     }
@@ -672,10 +671,10 @@ pub extern "system" fn start_server(mut env: JNIEnv, _class: JClass, port: jint)
                 });
                 env.new_string(resp.to_string()).unwrap().into_raw()
             }
-            Err(e) => {
-                let err = serde_json::json!({ "error": e.to_string() });
-                env.new_string(err.to_string()).unwrap().into_raw()
-            }
+            Err(e) => env
+                .new_string(error_json(&e, "local_server_start_failed"))
+                .unwrap()
+                .into_raw(),
         }
     }
 
@@ -697,22 +696,28 @@ pub extern "system" fn start_server_with_storage(
 
     let storage_path: String = match env.get_string(&storage_path) {
         Ok(s) => s.into(),
-        Err(e) => {
-            let err = serde_json::json!({ "error": format!("Invalid storage path: {:?}", e) });
-            return env.new_string(err.to_string()).unwrap().into_raw();
+        Err(_) => {
+            return env
+                .new_string(fixed_error_json("persistence_path_invalid"))
+                .unwrap()
+                .into_raw();
         }
     };
     let seed_cookies_json: String = match env.get_string(&seed_cookies_json) {
         Ok(s) => s.into(),
-        Err(e) => {
-            let err = serde_json::json!({ "error": format!("Invalid seed cookies: {:?}", e) });
-            return env.new_string(err.to_string()).unwrap().into_raw();
+        Err(_) => {
+            return env
+                .new_string(fixed_error_json("persistence_seed_invalid"))
+                .unwrap()
+                .into_raw();
         }
     };
 
-    if let Err(e) = crate::core::init_persistence(&storage_path, &seed_cookies_json, true) {
-        let err = serde_json::json!({ "error": e.to_string() });
-        return env.new_string(err.to_string()).unwrap().into_raw();
+    if let Err(error) = crate::core::init_persistence(&storage_path, &seed_cookies_json, true) {
+        return env
+            .new_string(error_json(&error, "persistence_init_failed"))
+            .unwrap()
+            .into_raw();
     }
 
     #[cfg(feature = "server")]
@@ -728,10 +733,10 @@ pub extern "system" fn start_server_with_storage(
                 });
                 env.new_string(resp.to_string()).unwrap().into_raw()
             }
-            Err(e) => {
-                let err = serde_json::json!({ "error": e.to_string() });
-                env.new_string(err.to_string()).unwrap().into_raw()
-            }
+            Err(e) => env
+                .new_string(error_json(&e, "local_server_start_failed"))
+                .unwrap()
+                .into_raw(),
         }
     }
 
@@ -758,22 +763,22 @@ pub extern "system" fn kv_put_string(
     crate::core::init_logger();
     let box_name: String = match env.get_string(&box_name) {
         Ok(s) => s.into(),
-        Err(e) => {
-            error!("kvPutString: invalid box name: {:?}", e);
+        Err(_) => {
+            error!("kv_put_box_name_invalid");
             return 0;
         }
     };
     let key: String = match env.get_string(&key) {
         Ok(s) => s.into(),
-        Err(e) => {
-            error!("kvPutString: invalid key: {:?}", e);
+        Err(_) => {
+            error!("kv_put_key_invalid");
             return 0;
         }
     };
     let value: String = match env.get_string(&value) {
         Ok(s) => s.into(),
-        Err(e) => {
-            error!("kvPutString: invalid value: {:?}", e);
+        Err(_) => {
+            error!("kv_put_value_invalid");
             return 0;
         }
     };
@@ -781,11 +786,11 @@ pub extern "system" fn kv_put_string(
     match crate::core::kv_put_string(&box_name, &key, &value) {
         Ok(true) => 1,
         Ok(false) => {
-            error!("kvPutString: persistence is not initialized");
+            error!("kv_put_persistence_uninitialized");
             0
         }
-        Err(e) => {
-            error!("kvPutString failed: {:?}", e);
+        Err(_) => {
+            error!("kv_put_failed");
             0
         }
     }
@@ -800,15 +805,15 @@ pub extern "system" fn kv_get_string(
     crate::core::init_logger();
     let box_name: String = match env.get_string(&box_name) {
         Ok(s) => s.into(),
-        Err(e) => {
-            error!("kvGetString: invalid box name: {:?}", e);
+        Err(_) => {
+            error!("kv_get_box_name_invalid");
             return std::ptr::null_mut();
         }
     };
     let key: String = match env.get_string(&key) {
         Ok(s) => s.into(),
-        Err(e) => {
-            error!("kvGetString: invalid key: {:?}", e);
+        Err(_) => {
+            error!("kv_get_key_invalid");
             return std::ptr::null_mut();
         }
     };
@@ -816,8 +821,8 @@ pub extern "system" fn kv_get_string(
     match crate::core::kv_get_string(&box_name, &key) {
         Ok(Some(value)) => env.new_string(value).unwrap().into_raw(),
         Ok(None) => std::ptr::null_mut(),
-        Err(e) => {
-            error!("kvGetString failed: {:?}", e);
+        Err(_) => {
+            error!("kv_get_failed");
             std::ptr::null_mut()
         }
     }
@@ -832,15 +837,15 @@ pub extern "system" fn kv_remove(
     crate::core::init_logger();
     let box_name: String = match env.get_string(&box_name) {
         Ok(s) => s.into(),
-        Err(e) => {
-            error!("kvRemove: invalid box name: {:?}", e);
+        Err(_) => {
+            error!("kv_remove_box_name_invalid");
             return 0;
         }
     };
     let key: String = match env.get_string(&key) {
         Ok(s) => s.into(),
-        Err(e) => {
-            error!("kvRemove: invalid key: {:?}", e);
+        Err(_) => {
+            error!("kv_remove_key_invalid");
             return 0;
         }
     };
@@ -848,8 +853,8 @@ pub extern "system" fn kv_remove(
     match crate::core::kv_remove_key(&box_name, &key) {
         Ok(true) => 1,
         Ok(false) => 0,
-        Err(e) => {
-            error!("kvRemove failed: {:?}", e);
+        Err(_) => {
+            error!("kv_remove_failed");
             0
         }
     }
@@ -863,8 +868,8 @@ pub extern "system" fn kv_clear_box(
     crate::core::init_logger();
     let box_name: String = match env.get_string(&box_name) {
         Ok(s) => s.into(),
-        Err(e) => {
-            error!("kvClearBox: invalid box name: {:?}", e);
+        Err(_) => {
+            error!("kv_clear_box_name_invalid");
             return 0;
         }
     };
@@ -872,8 +877,8 @@ pub extern "system" fn kv_clear_box(
     match crate::core::kv_clear_box(&box_name) {
         Ok(true) => 1,
         Ok(false) => 0,
-        Err(e) => {
-            error!("kvClearBox failed: {:?}", e);
+        Err(_) => {
+            error!("kv_clear_failed");
             0
         }
     }

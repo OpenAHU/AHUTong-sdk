@@ -179,20 +179,14 @@ impl Parser {
             let try_parse_json = |json_str: &str| -> Option<(i32, String)> {
                 // 1. 标准解析
                 if let Ok(sem) = serde_json::from_str::<CurrentSemester>(json_str) {
-                    info!(
-                        "[RustSDKSchedule] JSON parse success: id={}, name={}",
-                        sem.id, sem.name
-                    );
+                    info!("[RustSDKSchedule] Current semester JSON parse succeeded");
                     return Some((sem.id, sem.name));
                 }
 
                 // 2. 修复转义引号 (针对 JSON.parse('{\"id\":...}') 的情况)
                 let fixed_json = json_str.replace("\\\"", "\"");
                 if let Ok(sem) = serde_json::from_str::<CurrentSemester>(&fixed_json) {
-                    info!(
-                        "[RustSDKSchedule] Fixed JSON parse success: id={}, name={}",
-                        sem.id, sem.name
-                    );
+                    info!("[RustSDKSchedule] Escaped current semester JSON parse succeeded");
                     return Some((sem.id, sem.name));
                 }
 
@@ -207,10 +201,7 @@ impl Parser {
                 // 但考虑到教务系统的 key 通常比较简单，我们先尝试这种简单修复
                 let single_quote_fixed = json_str.replace("'", "\"");
                 if let Ok(sem) = serde_json::from_str::<CurrentSemester>(&single_quote_fixed) {
-                    info!(
-                        "[RustSDKSchedule] Single-quote fixed JSON parse success: id={}, name={}",
-                        sem.id, sem.name
-                    );
+                    info!("[RustSDKSchedule] Compatible current semester JSON parse succeeded");
                     return Some((sem.id, sem.name));
                 }
 
@@ -218,10 +209,7 @@ impl Parser {
                 // 实际上正则提取已经覆盖了 id 和 name，所以如果这里失败了，下面的正则提取会兜底。
                 // 所以我们不需要做太复杂的 JSON 修复。
 
-                warn!(
-                    "[RustSDKSchedule] JSON parsing failed. Content: {}",
-                    json_str
-                );
+                warn!("[RustSDKSchedule] Current semester JSON parsing failed");
 
                 // 4. 如果 JSON 解析彻底失败，尝试在这一小段内容中直接正则提取 id 和 name
                 // 因为我们已经提取到了 currentSemester 的值片段，哪怕它不是合法 JSON，只要包含 id: ... 就能提取
@@ -245,10 +233,7 @@ impl Parser {
                         } else {
                             "2024-2025-1".to_string()
                         };
-                        info!(
-                            "[RustSDKSchedule] Regex extraction from snippet success: id={}, name={}",
-                            id, name
-                        );
+                        info!("[RustSDKSchedule] Current semester fallback extraction succeeded");
                         return Some((id, name));
                     }
                 }
@@ -303,10 +288,7 @@ impl Parser {
                         } else {
                             "2024-2025-1".to_string()
                         };
-                        info!(
-                            "[RustSDKSchedule] Regex fallback extraction success: id={}, name={}",
-                            id, name
-                        );
+                        info!("[RustSDKSchedule] Current semester bounded extraction succeeded");
                         return Some((id, name));
                     }
                 }
@@ -335,12 +317,6 @@ impl Parser {
                 info!(
                     "[RustSDKSchedule] Found target script block (len: {})",
                     content.len()
-                );
-                // 打印一部分内容以便调试
-                let preview_len = std::cmp::min(content.len(), 500);
-                info!(
-                    "[RustSDKSchedule] Script Content Head: {}",
-                    &content[..preview_len]
                 );
 
                 // 尝试提取 currentSemester 对象的完整内容
@@ -371,13 +347,11 @@ impl Parser {
 
                             if found {
                                 let json_str = &json_start_slice[..end_brace];
-                                // info!("[RustSDKSchedule] Extracted balanced JSON string (len={}): {:.100}...", json_str.len(), json_str);
 
                                 // 尝试标准解析
                                 if let Ok(sem) = serde_json::from_str::<CurrentSemester>(json_str) {
                                     info!(
-                                        "[RustSDKSchedule] Balanced JSON parse success: id={}, name={}",
-                                        sem.id, sem.name
+                                        "[RustSDKSchedule] Balanced semester JSON parse succeeded"
                                     );
                                     return Some((sem.id, sem.name));
                                 }
@@ -388,8 +362,7 @@ impl Parser {
                                     serde_json::from_str::<CurrentSemester>(&single_quote_fixed)
                                 {
                                     info!(
-                                        "[RustSDKSchedule] Balanced Single-quote fixed JSON parse success: id={}, name={}",
-                                        sem.id, sem.name
+                                        "[RustSDKSchedule] Compatible balanced JSON parse succeeded"
                                     );
                                     return Some((sem.id, sem.name));
                                 }
@@ -418,8 +391,7 @@ impl Parser {
                                                 "2024-2025-1".to_string()
                                             };
                                         info!(
-                                            "[RustSDKSchedule] Balanced JSON Regex extraction success: id={}, name={}",
-                                            id, name
+                                            "[RustSDKSchedule] Balanced fallback extraction succeeded"
                                         );
                                         return Some((id, name));
                                     }
@@ -462,12 +434,6 @@ impl Parser {
             "[RustSDKSchedule] All parsing attempts failed. HTML len: {}",
             html.len()
         );
-        // log first 500 chars for debugging
-        if html.len() > 500 {
-            info!("[RustSDKSchedule] HTML Head: {}", &html[..500]);
-        } else {
-            info!("[RustSDKSchedule] HTML: {}", html);
-        }
 
         None
     }

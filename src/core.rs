@@ -64,13 +64,13 @@ pub fn load_or_clear_cookies(cookies_json: &str) {
     let c = crawler();
     if !cookies_json.is_empty() {
         c.client.load_cookies_json(cookies_json);
-        if let Err(e) = persistence::save_cookies(cookies_json) {
-            log::warn!("Failed to persist provided Rust cookies: {:?}", e);
+        if persistence::save_cookies(cookies_json).is_err() {
+            log::warn!("rust_cookie_persist_failed");
         }
     } else {
         c.client.clear_cookies();
-        if let Err(e) = persistence::clear_cookies() {
-            log::warn!("Failed to clear persisted Rust cookies: {:?}", e);
+        if persistence::clear_cookies().is_err() {
+            log::warn!("rust_cookie_clear_failed");
         }
     }
 }

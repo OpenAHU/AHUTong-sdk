@@ -1,4 +1,4 @@
-use anyhow::{Context, Result};
+use anyhow::{Result, anyhow};
 use base64::{Engine as _, engine::general_purpose::STANDARD as BASE64};
 use ed25519_dalek::{Signature, Verifier, VerifyingKey};
 use log::{error, info};
@@ -43,20 +43,16 @@ where
     F: FnMut(u64, i64) + Send,
 {
     let server_ip = "118.25.8.226";
-    info!(
-        "Starting download_and_verify_update. url={}, save_path={}",
-        url, save_path
-    );
+    info!("update_download_started");
 
-    let parsed = reqwest::Url::parse(url).context("Failed to parse download url")?;
+    let parsed = reqwest::Url::parse(url).map_err(|_| anyhow!("update_url_invalid"))?;
     let original_host = parsed
         .host_str()
-        .ok_or_else(|| anyhow::anyhow!("Download url has no host"))?
+        .ok_or_else(|| anyhow!("update_url_host_missing"))?
         .to_string();
     let ip_url = url.replace(&original_host, server_ip);
 
     // 1. Download file
-    info!("Downloading file from ip_url: {}", ip_url);
     let client = reqwest::Client::builder()
         .user_agent("RustSdkHotUpdate/1.0 (Android)")
         .danger_accept_invalid_hostnames(true)
@@ -64,7 +60,7 @@ where
         .connect_timeout(Duration::from_secs(10))
         .timeout(Duration::from_secs(600)) // 10 minutes for large files (APK)
         .build()
-        .context("Failed to build reqwest client")?;
+        .map_err(|_| anyhow!("update_http_client_failed"))?;
 
     let mut resp = client
         .get(&ip_url)
@@ -74,17 +70,22 @@ where
         .header(HOST, original_host.clone()) // ✅ 关键：让 nginx 按 server_name 路由
         .send()
         .await
-        .with_context(|| format!("Failed to download file. ipUrl={}", ip_url))?
-        .error_for_status()
-        .context("HTTP status is not success")?;
+        .map_err(|_| anyhow!("update_download_request_failed"))?;
+    let response_status = resp.status();
+    if !response_status.is_success() {
+        error!(
+            "update_download_http_failed status={}",
+            response_status.as_u16()
+        );
+        return Err(anyhow!("update_download_http_failed"));
+    }
 
     let total_len: i64 = resp.content_length().map(|v| v as i64).unwrap_or(-1);
 
     on_progress(0, total_len);
 
     // 2. Prepare file and hasher
-    info!("Creating file at {}", save_path);
-    let mut file = File::create(save_path).context("Failed to create file")?;
+    let mut file = File::create(save_path).map_err(|_| anyhow!("update_file_create_failed"))?;
     let mut hasher = Sha256::new();
 
     // 3. Stream download
@@ -94,9 +95,13 @@ where
     let mut last_emit_bytes: u64 = 0;
     let mut last_emit_time = Instant::now();
 
-    while let Some(chunk) = resp.chunk().await.context("Failed to read chunk")? {
+    while let Some(chunk) = resp
+        .chunk()
+        .await
+        .map_err(|_| anyhow!("update_download_stream_failed"))?
+    {
         file.write_all(&chunk)
-            .context("Failed to write chunk to file")?;
+            .map_err(|_| anyhow!("update_file_write_failed"))?;
         hasher.update(&chunk);
         downloaded += chunk.len() as u64;
 
@@ -110,7 +115,8 @@ where
         }
     }
 
-    file.flush().context("Failed to flush file")?;
+    file.flush()
+        .map_err(|_| anyhow!("update_file_flush_failed"))?;
     file.sync_all().ok();
     drop(file);
 
@@ -122,19 +128,11 @@ where
     info!("Verifying SHA256...");
     let digest = hasher.finalize();
     let calculated_sha256_hex = hex::encode(&digest);
-    info!(
-        "SHA256 calculated: {}, expected: {}",
-        calculated_sha256_hex, expected_sha256_hex
-    );
 
     if !calculated_sha256_hex.eq_ignore_ascii_case(expected_sha256_hex) {
-        error!("SHA256 mismatch! Deleting invalid file.");
+        error!("update_sha256_mismatch");
         let _ = std::fs::remove_file(save_path);
-        return Err(anyhow::anyhow!(
-            "SHA256 mismatch. Expected: {}, Calculated: {}",
-            expected_sha256_hex,
-            calculated_sha256_hex
-        ));
+        return Err(anyhow!("update_sha256_mismatch"));
     }
 
     // 3. Verify Signature
@@ -144,17 +142,18 @@ where
 
     let signature_bytes = BASE64
         .decode(signature_base64)
-        .context("Failed to decode base64 signature")?;
+        .map_err(|_| anyhow!("update_signature_decode_failed"))?;
 
-    let signature = Signature::from_slice(&signature_bytes).context("Invalid signature format")?;
+    let signature = Signature::from_slice(&signature_bytes)
+        .map_err(|_| anyhow!("update_signature_format_invalid"))?;
 
-    let verifying_key =
-        VerifyingKey::from_bytes(&PUBLIC_KEY_BYTES).context("Invalid public key")?;
+    let verifying_key = VerifyingKey::from_bytes(&PUBLIC_KEY_BYTES)
+        .map_err(|_| anyhow!("update_public_key_invalid"))?;
 
-    if let Err(e) = verifying_key.verify(digest_bytes, &signature) {
-        error!("Signature verification failed! Deleting invalid file.");
+    if verifying_key.verify(digest_bytes, &signature).is_err() {
+        error!("update_signature_invalid");
         let _ = std::fs::remove_file(save_path);
-        return Err(anyhow::anyhow!("Signature verification failed: {:?}", e));
+        return Err(anyhow!("update_signature_invalid"));
     }
     info!("Signature verified.");
     info!("File saved and verified successfully.");
@@ -211,7 +210,7 @@ pub async fn check_apk_update(current_version_code: i64) -> Result<ApkUpdateInfo
     let original_url = "https://openahu.org/api/check_apk_update";
     let server_ip = "118.25.8.226";
     let original_host = reqwest::Url::parse(original_url)
-        .context("parse original apk update url failed")?
+        .map_err(|_| anyhow!("update_config_url_invalid"))?
         .host_str()
         .unwrap_or("openahu.org")
         .to_string();
@@ -224,7 +223,7 @@ pub async fn check_apk_update(current_version_code: i64) -> Result<ApkUpdateInfo
         .connect_timeout(Duration::from_secs(5))
         .timeout(Duration::from_secs(8))
         .build()
-        .context("Failed to build reqwest client")?;
+        .map_err(|_| anyhow!("update_http_client_failed"))?;
 
     let resp = client
         .get(&ip_url)
@@ -234,20 +233,32 @@ pub async fn check_apk_update(current_version_code: i64) -> Result<ApkUpdateInfo
         .header(HOST, original_host.clone())
         .send()
         .await
-        .with_context(|| format!("Failed to request apk update config, url={}", ip_url))?
-        .error_for_status()
-        .context("APK update config http status not success")?;
+        .map_err(|_| anyhow!("update_config_request_failed"))?;
+    let response_status = resp.status();
+    if !response_status.is_success() {
+        error!(
+            "update_config_http_failed status={}",
+            response_status.as_u16()
+        );
+        return Err(anyhow!("update_config_http_failed"));
+    }
 
-    let text = resp.text().await.context("Failed to read response text")?;
-    info!("APK update config response: {}", text);
+    let text = resp
+        .text()
+        .await
+        .map_err(|_| anyhow!("update_config_read_failed"))?;
+    info!("update_config_received bytes={}", text.len());
 
     let cfg: ApkUpdateConfig =
-        serde_json::from_str(&text).context("Failed to parse apk update config JSON")?;
-
-    info!("Parsed config: {:?}", cfg);
+        serde_json::from_str(&text).map_err(|_| anyhow!("update_config_parse_failed"))?;
 
     let update = cfg.version_code > current_version_code;
-    info!("Update available: {}", update);
+    info!(
+        "update_config_evaluated remote_version_code={} available={} forced={}",
+        cfg.version_code,
+        update,
+        cfg.force && update
+    );
 
     Ok(ApkUpdateInfo {
         update,

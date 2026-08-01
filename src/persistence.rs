@@ -1,4 +1,6 @@
-use anyhow::{Context, Result};
+use anyhow::Result;
+#[cfg(not(target_arch = "wasm32"))]
+use anyhow::anyhow;
 
 #[cfg(not(target_arch = "wasm32"))]
 use guixu::{GuiXu, GuiXuError};
@@ -15,7 +17,6 @@ const COOKIES_KEY: &str = "cookies_json";
 #[cfg(not(target_arch = "wasm32"))]
 struct Persistence {
     db: GuiXu,
-    path: PathBuf,
     persist_session: bool,
 }
 
@@ -44,14 +45,12 @@ pub fn init(
         }
 
         let path = PathBuf::from(storage_path);
-        let db = GuiXu::new(path.clone())
-            .with_context(|| format!("failed to open Rust persistence at {}", path.display()))?;
+        let db = GuiXu::new(path).map_err(|_| anyhow!("persistence_open_failed"))?;
         let cookies_to_restore = if persist_session {
-            let stored_cookies = read_string_from(&db, SESSION_BOX, COOKIES_KEY)
-                .context("failed to read persisted Rust cookies")?;
+            let stored_cookies = read_string_from(&db, SESSION_BOX, COOKIES_KEY)?;
             if stored_cookies.is_none() && !seed_cookies_json.trim().is_empty() {
                 write_string_to(&db, SESSION_BOX, COOKIES_KEY, seed_cookies_json)
-                    .context("failed to migrate seeded Rust cookies")?;
+                    .map_err(|_| anyhow!("persistence_cookie_migration_failed"))?;
                 Some(seed_cookies_json.to_string())
             } else {
                 stored_cookies
@@ -69,7 +68,6 @@ pub fn init(
             .expect("persistence mutex poisoned");
         *guard = Some(Persistence {
             db,
-            path,
             persist_session,
         });
 
@@ -80,7 +78,11 @@ pub fn init(
 #[cfg(not(target_arch = "wasm32"))]
 fn validate_name(kind: &str, value: &str) -> Result<()> {
     if value.is_empty() {
-        anyhow::bail!("{kind} cannot be empty");
+        return Err(anyhow!(match kind {
+            "box name" => "persistence_box_name_empty",
+            "key" => "persistence_key_empty",
+            _ => "persistence_name_empty",
+        }));
     }
     if value.contains('/')
         || value.contains('\\')
@@ -88,7 +90,11 @@ fn validate_name(kind: &str, value: &str) -> Result<()> {
         || value.contains("..")
         || value.chars().any(|c| c.is_control())
     {
-        anyhow::bail!("invalid {kind}: {value}");
+        return Err(anyhow!(match kind {
+            "box name" => "persistence_box_name_invalid",
+            "key" => "persistence_key_invalid",
+            _ => "persistence_name_invalid",
+        }));
     }
     Ok(())
 }
@@ -99,14 +105,14 @@ fn read_string_from(db: &GuiXu, box_name: &str, key: &str) -> Result<Option<Stri
     validate_name("key", key)?;
     let mut kv = db
         .kv_box_for(box_name)
-        .with_context(|| format!("failed to open GuiXu box {box_name}"))?;
+        .map_err(|_| anyhow!("persistence_box_open_failed"))?;
     let value = match kv.get_string(key) {
         Ok(cookies) if !cookies.is_empty() => Some(cookies.to_string()),
         Ok(_) | Err(GuiXuError::KeyNotFound(_)) => None,
-        Err(err) => return Err(err).context("failed to read persisted Rust cookies"),
+        Err(_) => return Err(anyhow!("persistence_read_failed")),
     };
     kv.close()
-        .with_context(|| format!("failed to close GuiXu box {box_name}"))?;
+        .map_err(|_| anyhow!("persistence_box_close_failed"))?;
     Ok(value)
 }
 
@@ -116,11 +122,11 @@ fn write_string_to(db: &GuiXu, box_name: &str, key: &str, value: &str) -> Result
     validate_name("key", key)?;
     let mut kv = db
         .kv_box_for(box_name)
-        .with_context(|| format!("failed to open GuiXu box {box_name}"))?;
+        .map_err(|_| anyhow!("persistence_box_open_failed"))?;
     kv.put_string(key, value.to_string())
-        .with_context(|| format!("failed to write key {key} in GuiXu box {box_name}"))?;
+        .map_err(|_| anyhow!("persistence_write_failed"))?;
     kv.close()
-        .with_context(|| format!("failed to flush GuiXu box {box_name}"))?;
+        .map_err(|_| anyhow!("persistence_box_close_failed"))?;
     Ok(())
 }
 
@@ -130,11 +136,11 @@ fn remove_from(db: &GuiXu, box_name: &str, key: &str) -> Result<()> {
     validate_name("key", key)?;
     let mut kv = db
         .kv_box_for(box_name)
-        .with_context(|| format!("failed to open GuiXu box {box_name}"))?;
+        .map_err(|_| anyhow!("persistence_box_open_failed"))?;
     kv.remove(key)
-        .with_context(|| format!("failed to remove key {key} in GuiXu box {box_name}"))?;
+        .map_err(|_| anyhow!("persistence_remove_failed"))?;
     kv.close()
-        .with_context(|| format!("failed to flush GuiXu box {box_name}"))?;
+        .map_err(|_| anyhow!("persistence_box_close_failed"))?;
     Ok(())
 }
 
@@ -143,11 +149,11 @@ fn clear_box_in(db: &GuiXu, box_name: &str) -> Result<()> {
     validate_name("box name", box_name)?;
     let mut kv = db
         .kv_box_for(box_name)
-        .with_context(|| format!("failed to open GuiXu box {box_name}"))?;
+        .map_err(|_| anyhow!("persistence_box_open_failed"))?;
     kv.clear(true)
-        .with_context(|| format!("failed to clear GuiXu box {box_name}"))?;
+        .map_err(|_| anyhow!("persistence_clear_failed"))?;
     kv.close()
-        .with_context(|| format!("failed to flush GuiXu box {box_name}"))?;
+        .map_err(|_| anyhow!("persistence_box_close_failed"))?;
     Ok(())
 }
 
@@ -170,21 +176,11 @@ pub fn save_cookies(cookies_json: &str) -> Result<bool> {
         }
 
         if cookies_json.is_empty() {
-            remove_from(&persistence.db, SESSION_BOX, COOKIES_KEY).with_context(|| {
-                format!(
-                    "failed to clear Rust cookies at {}",
-                    persistence.path.display()
-                )
-            })?;
+            remove_from(&persistence.db, SESSION_BOX, COOKIES_KEY)
+                .map_err(|_| anyhow!("persistence_cookie_clear_failed"))?;
         } else {
-            write_string_to(&persistence.db, SESSION_BOX, COOKIES_KEY, cookies_json).with_context(
-                || {
-                    format!(
-                        "failed to persist Rust cookies at {}",
-                        persistence.path.display()
-                    )
-                },
-            )?;
+            write_string_to(&persistence.db, SESSION_BOX, COOKIES_KEY, cookies_json)
+                .map_err(|_| anyhow!("persistence_cookie_write_failed"))?;
         }
         Ok(true)
     }
@@ -334,8 +330,17 @@ mod tests {
                 .expect("reopen keychain-only session"),
             None
         );
-        assert!(put_string("../escape", "key", "value").is_err());
-        assert!(put_string("cache", "nested/key", "value").is_err());
+        let invalid_box = put_string("../escape", "key", "value")
+            .expect_err("invalid box name must fail")
+            .to_string();
+        assert_eq!(invalid_box, "persistence_box_name_invalid");
+        assert!(!invalid_box.contains("escape"));
+
+        let invalid_key = put_string("cache", "nested/key", "value")
+            .expect_err("invalid key must fail")
+            .to_string();
+        assert_eq!(invalid_key, "persistence_key_invalid");
+        assert!(!invalid_key.contains("nested"));
         let _ = remove_dir_all(root);
     }
 }

@@ -63,22 +63,25 @@ fn ffi_result<T: Serialize>(result: anyhow::Result<T>) -> *mut c_char {
         }),
         Err(error) => serde_json::json!({
             "ok": false,
-            "error": error.to_string(),
+            "error": crate::diagnostics::public_error_code(
+                &error,
+                "persistence_operation_failed"
+            ),
         }),
     };
     string_into_raw_ptr(response.to_string())
 }
 
-fn required_string(pointer: *const c_char, name: &str) -> anyhow::Result<String> {
+fn required_string(pointer: *const c_char) -> anyhow::Result<String> {
     if pointer.is_null() {
-        anyhow::bail!("{name} pointer is null");
+        anyhow::bail!("ffi_input_null");
     }
     // SAFETY: FFI callers must pass a valid NUL-terminated string for the
     // duration of this call. The value is copied before the function returns.
     let value = unsafe { CStr::from_ptr(pointer) };
     Ok(value
         .to_str()
-        .map_err(|error| anyhow::anyhow!("{name} is not UTF-8: {error}"))?
+        .map_err(|_| anyhow::anyhow!("ffi_input_invalid_utf8"))?
         .to_string())
 }
 
@@ -99,8 +102,8 @@ pub extern "C" fn ahutong_init_persistence(
 ) -> *mut c_char {
     crate::core::init_logger();
     ffi_call(|| {
-        let storage_path = required_string(storage_path, "storage_path")?;
-        let seed_cookies_json = required_string(seed_cookies_json, "seed_cookies_json")?;
+        let storage_path = required_string(storage_path)?;
+        let seed_cookies_json = required_string(seed_cookies_json)?;
         crate::core::init_persistence(&storage_path, &seed_cookies_json, persist_session != 0)?;
         Ok(true)
     })
@@ -120,9 +123,9 @@ pub extern "C" fn ahutong_kv_put_string(
 ) -> *mut c_char {
     crate::core::init_logger();
     ffi_call(|| {
-        let box_name = required_string(box_name, "box_name")?;
-        let key = required_string(key, "key")?;
-        let value = required_string(value, "value")?;
+        let box_name = required_string(box_name)?;
+        let key = required_string(key)?;
+        let value = required_string(value)?;
         let initialized = crate::core::kv_put_string(&box_name, &key, &value)?;
         if !initialized {
             anyhow::bail!("persistence is not initialized");
@@ -138,8 +141,8 @@ pub extern "C" fn ahutong_kv_get_string(
 ) -> *mut c_char {
     crate::core::init_logger();
     ffi_call(|| {
-        let box_name = required_string(box_name, "box_name")?;
-        let key = required_string(key, "key")?;
+        let box_name = required_string(box_name)?;
+        let key = required_string(key)?;
         crate::core::kv_get_string(&box_name, &key)
     })
 }
@@ -148,8 +151,8 @@ pub extern "C" fn ahutong_kv_get_string(
 pub extern "C" fn ahutong_kv_remove(box_name: *const c_char, key: *const c_char) -> *mut c_char {
     crate::core::init_logger();
     ffi_call(|| {
-        let box_name = required_string(box_name, "box_name")?;
-        let key = required_string(key, "key")?;
+        let box_name = required_string(box_name)?;
+        let key = required_string(key)?;
         let initialized = crate::core::kv_remove_key(&box_name, &key)?;
         if !initialized {
             anyhow::bail!("persistence is not initialized");
@@ -162,7 +165,7 @@ pub extern "C" fn ahutong_kv_remove(box_name: *const c_char, key: *const c_char)
 pub extern "C" fn ahutong_kv_clear_box(box_name: *const c_char) -> *mut c_char {
     crate::core::init_logger();
     ffi_call(|| {
-        let box_name = required_string(box_name, "box_name")?;
+        let box_name = required_string(box_name)?;
         let initialized = crate::core::kv_clear_box(&box_name)?;
         if !initialized {
             anyhow::bail!("persistence is not initialized");
@@ -188,8 +191,10 @@ pub extern "C" fn ahutong_start_server(port: u16) -> *mut c_char {
                 Some(info.token),
                 None,
             )),
-            Ok(Err(e)) => {
-                string_into_raw_ptr(response_string(false, None, None, Some(e.to_string())))
+            Ok(Err(error)) => {
+                let code =
+                    crate::diagnostics::public_error_code(&error, "local_server_start_failed");
+                string_into_raw_ptr(response_string(false, None, None, Some(code.to_string())))
             }
             Err(_) => string_into_raw_ptr(response_string(
                 false,

@@ -677,14 +677,16 @@ mod tests {
     fn test_ascii() {
         // "123" with keys
         let res = DES::str_enc("123", "1", "2", "3");
-        println!("Encrypted 123: {}", res);
+        assert!(!res.is_empty());
+        assert_ne!(res, "123");
     }
 
     #[test]
     fn test_ascii_4() {
         // "1234" with keys
         let res = DES::str_enc("1234", "1", "2", "3");
-        println!("Encrypted 1234: {}", res);
+        assert!(!res.is_empty());
+        assert_ne!(res, "1234");
     }
 
     #[test]
@@ -692,7 +694,8 @@ mod tests {
         // "测试" (6 bytes in UTF-8, 2 chars)
         // This should NOT crash anymore
         let res = DES::str_enc("测试", "1", "2", "3");
-        println!("Encrypted Unicode: {}", res);
+        assert!(!res.is_empty());
+        assert_ne!(res, "测试");
     }
 
     #[test]
