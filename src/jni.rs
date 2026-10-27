@@ -155,16 +155,20 @@ pub extern "system" fn JNI_OnLoad(vm: JavaVM, _reserved: *mut c_void) -> jint {
         .expect("Failed to register core native methods");
 
     if let Err(e) = env.register_native_methods(&clazz, extended_methods) {
+        let _ = env.exception_clear();
         info!(
             "Extended native methods not registered (expected on legacy APK): {:?}",
             e
         );
     }
 
+    crate::diagnostics::install_android_bridge(&mut env, &clazz);
+
     JNI_VERSION_1_6
 }
 
 pub extern "system" fn init(mut env: JNIEnv, _class: JClass, cookies_json: JString) {
+    let _diagnostic_generation = crate::diagnostics::GenerationScope::capture();
     crate::core::init_logger();
     info!("Rust SDK Initialized");
 
@@ -177,6 +181,7 @@ pub extern "system" fn init(mut env: JNIEnv, _class: JClass, cookies_json: JStri
 }
 
 pub extern "system" fn dump_cookies(mut env: JNIEnv, _class: JClass) -> jstring {
+    let _diagnostic_generation = crate::diagnostics::GenerationScope::capture();
     crate::core::init_logger();
     let cookies = crate::core::crawler().client.dump_cookies_json();
     env.new_string(cookies).unwrap().into_raw()
@@ -188,6 +193,7 @@ pub extern "system" fn login(
     username: JString,
     password: JString,
 ) -> jstring {
+    let _diagnostic_generation = crate::diagnostics::GenerationScope::capture();
     crate::core::init_logger();
     let username: String = env.get_string(&username).expect("Invalid username").into();
     let password: String = env.get_string(&password).expect("Invalid password").into();
@@ -214,6 +220,7 @@ pub extern "system" fn login(
 }
 
 pub extern "system" fn get_schedule(mut env: JNIEnv, _class: JClass) -> jstring {
+    let _diagnostic_generation = crate::diagnostics::GenerationScope::capture();
     crate::core::init_logger();
     let result =
         crate::core::runtime().block_on(async { crate::core::crawler().get_schedule().await });
@@ -231,6 +238,7 @@ pub extern "system" fn get_schedule(mut env: JNIEnv, _class: JClass) -> jstring 
 }
 
 pub extern "system" fn refresh_token(mut env: JNIEnv, _class: JClass) -> jstring {
+    let _diagnostic_generation = crate::diagnostics::GenerationScope::capture();
     crate::core::init_logger();
     let result = crate::core::runtime()
         .block_on(async { crate::core::auth_manager().refresh_token().await });
@@ -245,12 +253,14 @@ pub extern "system" fn refresh_token(mut env: JNIEnv, _class: JClass) -> jstring
 }
 
 pub extern "system" fn get_cookies_list(mut env: JNIEnv, _class: JClass) -> jstring {
+    let _diagnostic_generation = crate::diagnostics::GenerationScope::capture();
     crate::core::init_logger();
     let json = crate::core::crawler().client.get_cookies_flat_json();
     env.new_string(json).unwrap().into_raw()
 }
 
 pub extern "system" fn get_qrcode(mut env: JNIEnv, _class: JClass) -> jstring {
+    let _diagnostic_generation = crate::diagnostics::GenerationScope::capture();
     crate::core::init_logger();
     let result =
         crate::core::runtime().block_on(async { crate::core::crawler().get_qrcode().await });
@@ -268,6 +278,7 @@ pub extern "system" fn get_qrcode(mut env: JNIEnv, _class: JClass) -> jstring {
 }
 
 pub extern "system" fn get_balance(mut env: JNIEnv, _class: JClass) -> jstring {
+    let _diagnostic_generation = crate::diagnostics::GenerationScope::capture();
     crate::core::init_logger();
     let result =
         crate::core::runtime().block_on(async { crate::core::crawler().get_balance().await });
@@ -285,6 +296,7 @@ pub extern "system" fn get_balance(mut env: JNIEnv, _class: JClass) -> jstring {
 }
 
 pub extern "system" fn get_exam_info(mut env: JNIEnv, _class: JClass) -> jstring {
+    let _diagnostic_generation = crate::diagnostics::GenerationScope::capture();
     crate::core::init_logger();
     let result =
         crate::core::runtime().block_on(async { crate::core::crawler().get_exam_info().await });
@@ -306,6 +318,7 @@ pub extern "system" fn get_exam_info(mut env: JNIEnv, _class: JClass) -> jstring
 }
 
 pub extern "system" fn get_grade(mut env: JNIEnv, _class: JClass) -> jstring {
+    let _diagnostic_generation = crate::diagnostics::GenerationScope::capture();
     crate::core::init_logger();
     let result = crate::core::runtime().block_on(async {
         // 传入 None 自动获取 ID
@@ -330,6 +343,7 @@ pub extern "system" fn download_school_calendar(
     _class: JClass,
     save_path: JString,
 ) -> jboolean {
+    let _diagnostic_generation = crate::diagnostics::GenerationScope::capture();
     crate::core::init_logger();
 
     let path: String = match env.get_string(&save_path) {
@@ -381,6 +395,7 @@ pub extern "system" fn download_school_calendar(
     }
 }
 pub extern "system" fn get_update_log(mut env: JNIEnv, _this: JObject) -> jstring {
+    let _diagnostic_generation = crate::diagnostics::GenerationScope::capture();
     crate::core::init_logger();
 
     let update_log = r#"
@@ -413,6 +428,7 @@ pub extern "system" fn get_update_log(mut env: JNIEnv, _this: JObject) -> jstrin
 }
 
 pub extern "system" fn get_version_name(mut env: JNIEnv, _this: JObject) -> jstring {
+    let _diagnostic_generation = crate::diagnostics::GenerationScope::capture();
     crate::core::init_logger();
     // 暂时不用这个
     let version = "1.0.0 (HotFix)";
@@ -422,6 +438,7 @@ pub extern "system" fn get_version_name(mut env: JNIEnv, _this: JObject) -> jstr
 }
 
 pub extern "system" fn get_update_config_url(mut env: JNIEnv, _class: JClass) -> jstring {
+    let _diagnostic_generation = crate::diagnostics::GenerationScope::capture();
     crate::core::init_logger();
 
     let url = "https://openahu.org/api/check_update";
@@ -438,6 +455,7 @@ pub extern "system" fn download_update(
     expected_sha256: JString,
     signature: JString,
 ) -> jboolean {
+    let _diagnostic_generation = crate::diagnostics::GenerationScope::capture();
     crate::core::init_logger();
     let url: String = match env.get_string(&url) {
         Ok(s) => s.into(),
@@ -476,6 +494,7 @@ pub extern "system" fn download_update(
 }
 
 pub extern "system" fn get_api_server_ip(mut env: JNIEnv, _class: JClass) -> jstring {
+    let _diagnostic_generation = crate::diagnostics::GenerationScope::capture();
     crate::core::init_logger();
     let ip = "118.25.8.226";
     env.new_string(ip)
@@ -488,6 +507,7 @@ pub extern "system" fn check_apk_update(
     _class: JClass,
     current_version_code: jlong,
 ) -> jstring {
+    let _diagnostic_generation = crate::diagnostics::GenerationScope::capture();
     crate::core::init_logger();
 
     info!(
@@ -521,6 +541,7 @@ pub extern "system" fn download_apk_update(
     expected_sha256: JString,
     signature: JString,
 ) -> jboolean {
+    let _diagnostic_generation = crate::diagnostics::GenerationScope::capture();
     crate::core::init_logger();
 
     let url: String = match env.get_string(&url) {
@@ -568,6 +589,7 @@ pub extern "system" fn download_apk_update_with_progress(
     signature: JString,
     callback: JObject,
 ) -> jboolean {
+    let _diagnostic_generation = crate::diagnostics::GenerationScope::capture();
     crate::core::init_logger();
 
     let url: String = match env.get_string(&url) {
@@ -657,6 +679,7 @@ pub extern "system" fn download_apk_update_with_progress(
 }
 
 pub extern "system" fn start_server(mut env: JNIEnv, _class: JClass, port: jint) -> jstring {
+    let _diagnostic_generation = crate::diagnostics::GenerationScope::capture();
     crate::core::init_logger();
 
     #[cfg(feature = "server")]
@@ -693,6 +716,7 @@ pub extern "system" fn start_server_with_storage(
     storage_path: JString,
     seed_cookies_json: JString,
 ) -> jstring {
+    let _diagnostic_generation = crate::diagnostics::GenerationScope::capture();
     crate::core::init_logger();
 
     let storage_path: String = match env.get_string(&storage_path) {
@@ -743,6 +767,7 @@ pub extern "system" fn start_server_with_storage(
 }
 
 pub extern "system" fn stop_server(_env: JNIEnv, _class: JClass) {
+    let _diagnostic_generation = crate::diagnostics::GenerationScope::capture();
     crate::core::init_logger();
     #[cfg(feature = "server")]
     let _ = crate::core::runtime().block_on(async { server::stop().await });
@@ -755,6 +780,7 @@ pub extern "system" fn kv_put_string(
     key: JString,
     value: JString,
 ) -> jboolean {
+    let _diagnostic_generation = crate::diagnostics::GenerationScope::capture();
     crate::core::init_logger();
     let box_name: String = match env.get_string(&box_name) {
         Ok(s) => s.into(),
@@ -797,6 +823,7 @@ pub extern "system" fn kv_get_string(
     box_name: JString,
     key: JString,
 ) -> jstring {
+    let _diagnostic_generation = crate::diagnostics::GenerationScope::capture();
     crate::core::init_logger();
     let box_name: String = match env.get_string(&box_name) {
         Ok(s) => s.into(),
@@ -829,6 +856,7 @@ pub extern "system" fn kv_remove(
     box_name: JString,
     key: JString,
 ) -> jboolean {
+    let _diagnostic_generation = crate::diagnostics::GenerationScope::capture();
     crate::core::init_logger();
     let box_name: String = match env.get_string(&box_name) {
         Ok(s) => s.into(),
@@ -860,6 +888,7 @@ pub extern "system" fn kv_clear_box(
     _class: JClass,
     box_name: JString,
 ) -> jboolean {
+    let _diagnostic_generation = crate::diagnostics::GenerationScope::capture();
     crate::core::init_logger();
     let box_name: String = match env.get_string(&box_name) {
         Ok(s) => s.into(),

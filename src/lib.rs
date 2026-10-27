@@ -25,6 +25,7 @@ mod persistence;
 pub mod jni;
 
 pub mod core;
+pub mod diagnostics;
 #[cfg(feature = "server")]
 pub mod server;
 

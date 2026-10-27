@@ -22,7 +22,8 @@ pub fn init_logger() {
         android_logger::init_once(
             Config::default()
                 .with_max_level(LevelFilter::Info)
-                .with_tag("RustSDK"),
+                .with_tag("RustSDK")
+                .format(crate::diagnostics::format_android_log),
         );
     }
 
